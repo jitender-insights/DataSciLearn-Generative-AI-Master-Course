@@ -17,7 +17,7 @@ This course is ideal for:
 - ### How to Access the Course
 
 All course content is available for free on the [DataSciLearn YouTube channel]
-(https://www.youtube.com/datascilearn). Make sure to subscribe and turn on notifications to stay updated on new content.
+(https://www.youtube.com/@datascilearn). Make sure to subscribe and turn on notifications to stay updated on new content.
 
 ### Contributing
 
