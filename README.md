@@ -14,6 +14,11 @@ This course is ideal for:
 - Machine Learning Engineers who want to deepen their understanding.
 - AI enthusiasts who want to explore the creative side of AI.
 
+- ### Prerequisites
+
+- Basic understanding of Python and machine learning.
+- Familiarity with neural networks is a plus but not required.
+
 - ### How to Access the Course
 
 All course content is available for free on our YouTube channel
