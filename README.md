@@ -1,7 +1,7 @@
 # DataSciLearn Generative AI Master Course
 
 **Welcome to the Generative AI Master Course by DataSciLearn!**  
-**Tagline:** *Let's Learn Data Science*
+
 
 ## Course Overview
 
