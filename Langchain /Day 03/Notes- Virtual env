@@ -1,0 +1,15 @@
+How to create virtual environment
+
+Using Annaconda 
+
+conda create -n langchain-venv python=3.12
+pip install -r requirements.t
+Annaconda Navigator - download link - https://www.anaconda.com/download/success
+Vs code - download link - https://code.visualstudio.com/download
+
+
+
+LangChain Components:
+1. prompt templates, models and output parsers
+2. build simple application with langChain
+3. Trace application with LangSmith 
