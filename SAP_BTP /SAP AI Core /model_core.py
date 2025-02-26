@@ -44,9 +44,10 @@ Summary: {summary}
 Description: {description}
 
 Instructions:
-1. Focus on semantic similarity in the problem description, as company code and component matching has already been validated
-2. Consider only tickets with matching company code and component as potential duplicates
-3. A ticket is likely duplicate if it describes the same issue from the same company/component
+1. Focus ONLY on semantic similarity in the problem description
+2. Company code and component matching has already been validated and filtered
+3. A ticket is likely duplicate if it describes the same issue with similar symptoms or errors
+4. Do NOT perform additional validations - focus solely on content similarity analysis
 
 Respond in this EXACT format (replace values appropriately):
 {{"is_duplicate": true/false, "original_ticket_id": "TICKET-123 or null", "confidence": 0.95, "reasoning": "Explanation here"}}
@@ -64,7 +65,7 @@ Description: {description}
 Respond in this EXACT format (replace values appropriately):
 {{"is_global_outage": true/false, "confidence": 0.95, "reasoning": "Explanation here"}}"""
 
-def get_embedding(text, embedding_model=None):
+def get_embedding(text, embedding_model=config.EMBEDDING_MODEL):
     """Get embedding vector for text using SAP BTP text-embedding-3 model."""
     # In a real implementation, this would call the SAP BTP embedding API
     # For this example, we'll use a placeholder function that returns random embeddings
@@ -77,8 +78,33 @@ def get_embedding(text, embedding_model=None):
     embedding_dim = 1536  # Typical dimension for modern embedding models
     return np.random.rand(embedding_dim).astype(np.float32)
 
+def save_faiss_index(index, filename="faiss_index"):
+    """Save FAISS index to disk."""
+    save_path = os.path.join(config.INDEX_SAVE_LOCATION, filename)
+    
+    # Create directory if it doesn't exist
+    os.makedirs(config.INDEX_SAVE_LOCATION, exist_ok=True)
+    
+    faiss.write_index(index, save_path)
+    return save_path
+
+def load_faiss_index(filename="faiss_index"):
+    """Load FAISS index from disk."""
+    load_path = os.path.join(config.INDEX_SAVE_LOCATION, filename)
+    
+    if os.path.exists(load_path):
+        return faiss.read_index(load_path)
+    return None
+
 def create_vector_index(data_records):
-    """Create FAISS HNSW index from ticket data."""
+    """Create FAISS index from ticket data."""
+    # First check if we have a saved index
+    index = load_faiss_index()
+    if index is not None:
+        # If index exists, we could update it with new records
+        # For simplicity, we'll recreate it in this example
+        pass
+    
     # Extract text data for embedding
     texts = []
     for record in data_records:
@@ -89,15 +115,24 @@ def create_vector_index(data_records):
     # Generate embeddings
     embeddings = np.array([get_embedding(text) for text in texts]).astype(np.float32)
     
-    # Create FAISS HNSW index
+    # Create FAISS index based on config
     embedding_dim = embeddings.shape[1]
-    index = faiss.IndexHNSWFlat(embedding_dim, 32)  # 32 connections per node
-    index.hnsw.efConstruction = 40  # Higher values give better recall but slower construction
-    index.hnsw.efSearch = 16  # Higher values give better recall but slower search
+    
+    # Set index type based on config, default to flat index
+    if config.INDEX_TYPE == "IndexFlatL2":
+        index = faiss.IndexFlatL2(embedding_dim)
+    else:
+        # Default to HNSW index
+        index = faiss.IndexHNSWFlat(embedding_dim, 32)  # 32 connections per node
+        index.hnsw.efConstruction = 40  # Higher values give better recall but slower construction
+        index.hnsw.efSearch = 16  # Higher values give better recall but slower search
     
     # Add vectors to index
     if len(embeddings) > 0:
         index.add(embeddings)
+    
+    # Save the index
+    save_faiss_index(index)
     
     return index, embeddings
 
@@ -157,6 +192,15 @@ def parse_llm_response(response_text, default_response):
         print(f"Raw response: {response_text}")
         return default_response
 
+def validate_ticket_data(ticket_data):
+    """Pre-validate ticket data before processing."""
+    # Check for required fields
+    for field in config.PRE_VALIDATION_FIELDS:
+        if not ticket_data.get(field):
+            return False, f"Missing required field: {field}"
+    
+    return True, "Validation successful"
+
 def check_duplicate(master_df, ticket_data):
     """Check if a ticket is duplicate using direct LLM analysis or Vector DB based on config."""
     default_response = {
@@ -167,23 +211,25 @@ def check_duplicate(master_df, ticket_data):
     }
     
     # Pre-validation: Only process tickets with valid company code and component
-    if not ticket_data.get('company_code') or not ticket_data.get('component'):
+    is_valid, validation_message = validate_ticket_data(ticket_data)
+    if not is_valid:
         return {
             "is_duplicate": False,
             "original_ticket_id": None,
             "confidence": 0.0,
-            "reasoning": "Missing company code or component"
+            "reasoning": validation_message
         }
     
     try:
         # First try Vector DB approach if enabled
         if config.ENABLE_VECTOR_DB_DUPLICATE_DETECTION:
-            # Get relevant tickets based on company code and component
+            # Pre-filter based on company code and component before searching
             relevant_df = master_df[
-                (master_df['company_code'] == ticket_data['company_code']) |
+                (master_df['company_code'] == ticket_data['company_code']) &
                 (master_df['component'] == ticket_data['component'])
             ].copy()
             
+            # Skip to LLM if no relevant tickets found in Vector DB
             if not relevant_df.empty:
                 # Create vector index for relevant tickets
                 relevant_records = relevant_df.to_dict(orient="records")
@@ -196,63 +242,88 @@ def check_duplicate(master_df, ticket_data):
                 # Search for similar tickets
                 distances, indices = search_vector_db(vector_index, query_embedding, k=5)
                 
-                # Convert distances to similarity scores
-                similarities = [1 - (dist/2) for dist in distances]
+                # Convert distances to cosine similarity scores
+                # For L2 distances, convert to similarity (1 - normalized_distance)
+                max_distance = np.max(distances) if distances.size > 0 else 1.0
+                similarities = [1 - (dist/max_distance) for dist in distances]
                 
                 # Find the best match
                 best_idx = 0  # Default to first result
-                best_similarity = similarities[0]
+                best_similarity = similarities[0] if similarities else 0
                 
                 for i, similarity in enumerate(similarities):
                     if similarity > best_similarity:
                         best_similarity = similarity
                         best_idx = i
                 
-                # Get the matching ticket details
-                matching_ticket = relevant_df.iloc[indices[best_idx]]
-                
-                # Determine duplicate status based on thresholds
-                if best_similarity >= config.DUPLICATE_THRESHOLDS['definite_duplicate']:
-                    return {
-                        "is_duplicate": True,
-                        "original_ticket_id": matching_ticket['ticket_id'],
-                        "confidence": best_similarity,
-                        "reasoning": f"Vector similarity score: {best_similarity:.4f} - Definite duplicate"
-                    }
-                elif best_similarity >= config.DUPLICATE_THRESHOLDS['likely_duplicate']:
-                    return {
-                        "is_duplicate": True,
-                        "original_ticket_id": matching_ticket['ticket_id'],
-                        "confidence": best_similarity,
-                        "reasoning": f"Vector similarity score: {best_similarity:.4f} - Likely duplicate"
-                    }
+                # Get the matching ticket details if there are results
+                if indices.size > 0 and best_idx < len(indices):
+                    matching_ticket = relevant_df.iloc[indices[best_idx]]
+                    
+                    # Determine duplicate status based on thresholds
+                    if best_similarity >= config.DUPLICATE_THRESHOLDS['definite_duplicate']:
+                        return {
+                            "is_duplicate": True,
+                            "original_ticket_id": matching_ticket['ticket_id'],
+                            "confidence": best_similarity,
+                            "reasoning": f"Vector similarity score: {best_similarity:.4f} - Definite duplicate"
+                        }
+                    elif best_similarity >= config.DUPLICATE_THRESHOLDS['likely_duplicate']:
+                        return {
+                            "is_duplicate": True,
+                            "original_ticket_id": matching_ticket['ticket_id'],
+                            "confidence": best_similarity,
+                            "reasoning": f"Vector similarity score: {best_similarity:.4f} - Likely duplicate"
+                        }
         
         # Fall back to LLM approach if Vector DB not enabled or didn't find a match
         if config.ENABLE_LLM_DUPLICATE_DETECTION:
-            # Get relevant tickets for LLM
+            # Pre-filter for LLM to reduce complexity
             relevant_df = master_df[
-                (master_df['company_code'] == ticket_data['company_code']) |
+                (master_df['company_code'] == ticket_data['company_code']) &
                 (master_df['component'] == ticket_data['component'])
             ].copy()
             
+            # Only use LLM if we have relevant tickets
             if relevant_df.empty:
-                relevant_df = master_df.copy()
+                return {
+                    "is_duplicate": False,
+                    "original_ticket_id": None,
+                    "confidence": 0.0,
+                    "reasoning": "No matching company code and component found"
+                }
                 
             historical_context = format_tickets_for_context(relevant_df)
             
             # Prepare and execute the chain
             prompt = ChatPromptTemplate.from_template(DUPLICATE_CHECK_TEMPLATE)
             chain = prompt | llm | StrOutputParser()
-            response = chain.invoke({
-                "historical_tickets": historical_context,
-                "company_code": str(ticket_data["company_code"]),
-                "component": str(ticket_data["component"]),
-                "summary": str(ticket_data["summary"]),
-                "description": str(ticket_data["description"])
-            })
             
-            return parse_llm_response(response, default_response)
+            # Implement retry logic
+            retries = 0
+            while retries < config.MAX_LLM_RETRIES:
+                try:
+                    response = chain.invoke({
+                        "historical_tickets": historical_context,
+                        "company_code": str(ticket_data["company_code"]),
+                        "component": str(ticket_data["component"]),
+                        "summary": str(ticket_data["summary"]),
+                        "description": str(ticket_data["description"])
+                    })
+                    
+                    result = parse_llm_response(response, default_response)
+                    if result != default_response:
+                        return result
+                    
+                    retries += 1
+                except Exception as e:
+                    print(f"LLM retry {retries+1}/{config.MAX_LLM_RETRIES} failed: {str(e)}")
+                    retries += 1
+            
+            # If we get here, all retries failed
+            return default_response
         
+        # If neither Vector DB nor LLM analysis is enabled
         return default_response
         
     except Exception as e:
@@ -268,13 +339,18 @@ def check_recently_closed_tickets(ticket_data, master_df):
         "reasoning": "No recent similar tickets found"
     }
     
+    # Pre-validation
+    is_valid, validation_message = validate_ticket_data(ticket_data)
+    if not is_valid:
+        return default_response
+    
     try:
-        # Pre-validation step
+        # Pre-filter by company code and component first
         cutoff_date = datetime.now() - timedelta(days=config.RECENT_TICKETS_DAYS)
         recent_df = master_df[
             (master_df["closure_date"] >= cutoff_date) &
-            ((master_df['company_code'] == ticket_data['company_code']) |
-             (master_df['component'] == ticket_data['component']))
+            (master_df['company_code'] == ticket_data['company_code']) &
+            (master_df['component'] == ticket_data['component'])
         ].copy()
         
         if recent_df.empty:
@@ -294,9 +370,13 @@ def check_recently_closed_tickets(ticket_data, master_df):
             distances, indices = search_vector_db(vector_index, query_embedding, k=5)
             
             # Convert distances to similarity scores
-            similarities = [1 - (dist/2) for dist in distances]
+            max_distance = np.max(distances) if distances.size > 0 else 1.0
+            similarities = [1 - (dist/max_distance) for dist in distances]
             
             # Find the best match
+            if not similarities:
+                return default_response
+                
             best_idx = 0
             best_similarity = similarities[0]
             
@@ -306,16 +386,17 @@ def check_recently_closed_tickets(ticket_data, master_df):
                     best_idx = i
             
             # Determine duplicate status based on thresholds
-            if best_similarity >= config.DUPLICATE_THRESHOLDS['definite_duplicate'] or best_similarity >= config.DUPLICATE_THRESHOLDS['likely_duplicate']:
-                # Get the matching ticket details
-                matching_ticket = recent_df.iloc[indices[best_idx]]
-                
-                return {
-                    "is_duplicate": True,
-                    "original_ticket_id": matching_ticket['ticket_id'],
-                    "confidence": best_similarity,
-                    "reasoning": f"Recently closed ticket with vector similarity: {best_similarity:.4f}"
-                }
+            if indices.size > 0 and best_idx < len(indices):
+                if best_similarity >= config.DUPLICATE_THRESHOLDS['definite_duplicate'] or best_similarity >= config.DUPLICATE_THRESHOLDS['likely_duplicate']:
+                    # Get the matching ticket details
+                    matching_ticket = recent_df.iloc[indices[best_idx]]
+                    
+                    return {
+                        "is_duplicate": True,
+                        "original_ticket_id": matching_ticket['ticket_id'],
+                        "confidence": best_similarity,
+                        "reasoning": f"Recently closed ticket with vector similarity: {best_similarity:.4f}"
+                    }
             
             return default_response
         
@@ -326,15 +407,28 @@ def check_recently_closed_tickets(ticket_data, master_df):
             prompt = ChatPromptTemplate.from_template(DUPLICATE_CHECK_TEMPLATE)
             chain = prompt | llm | StrOutputParser()
             
-            response = chain.invoke({
-                "historical_tickets": historical_context,
-                "company_code": str(ticket_data["company_code"]),
-                "component": str(ticket_data["component"]),
-                "summary": str(ticket_data["summary"]),
-                "description": str(ticket_data["description"])
-            })
+            # Implement retry logic for LLM
+            retries = 0
+            while retries < config.MAX_LLM_RETRIES:
+                try:
+                    response = chain.invoke({
+                        "historical_tickets": historical_context,
+                        "company_code": str(ticket_data["company_code"]),
+                        "component": str(ticket_data["component"]),
+                        "summary": str(ticket_data["summary"]),
+                        "description": str(ticket_data["description"])
+                    })
+                    
+                    result = parse_llm_response(response, default_response)
+                    if result != default_response:
+                        return result
+                    
+                    retries += 1
+                except Exception as e:
+                    print(f"LLM retry {retries+1}/{config.MAX_LLM_RETRIES} failed: {str(e)}")
+                    retries += 1
             
-            return parse_llm_response(response, default_response)
+            return default_response
         
         else:
             return default_response
@@ -359,14 +453,24 @@ def is_global_outage(ticket_data, master_df):
         prompt = ChatPromptTemplate.from_template(GLOBAL_OUTAGE_TEMPLATE)
         chain = prompt | llm | StrOutputParser()
         
-        response = chain.invoke({
-            "global_outages": global_outages_context,
-            "summary": str(ticket_data["summary"]),
-            "description": str(ticket_data["description"])
-        })
+        # Implement retry logic
+        retries = 0
+        while retries < config.MAX_LLM_RETRIES:
+            try:
+                response = chain.invoke({
+                    "global_outages": global_outages_context,
+                    "summary": str(ticket_data["summary"]),
+                    "description": str(ticket_data["description"])
+                })
+                
+                result = parse_llm_response(response, {"is_global_outage": False})
+                return result.get("is_global_outage", False)
+                
+            except Exception as e:
+                print(f"LLM retry {retries+1}/{config.MAX_LLM_RETRIES} failed: {str(e)}")
+                retries += 1
         
-        result = parse_llm_response(response, {"is_global_outage": False})
-        return result.get("is_global_outage", False)
+        return False
         
     except Exception as e:
         print(f"Error in is_global_outage: {str(e)}")
