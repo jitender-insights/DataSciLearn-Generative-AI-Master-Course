@@ -1,225 +1,382 @@
-import os
-import pandas as pd
-from datetime import datetime, timedelta
-import json
-from dotenv import load_dotenv
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-from gen_ai_hub.proxy.core.proxy_clients import get_proxy_client
-from gen_ai_hub.proxy.langchain.init_models import init_llm
-import faiss  # For Vector DB
-import numpy as np
-from config import (
-    DUPLICATE_THRESHOLDS, ENABLE_LLM, ENABLE_VECTOR_DB, VECTOR_DB_CONFIG, LLM_CONFIG, DATASET_DIR, MASTER_DATA_FILE, NEW_TICKET_FILE
-)
+def save_chroma_store(vector_store, metadata=None, collection_name="ticket_collection"):
+    """Persist ChromaDB vector store to disk."""
+    # Create directory if it doesn't exist
+    os.makedirs(config.INDEX_SAVE_LOCATION, exist_ok=True)
+    
+    # Persist the vector store
+    vector_store.persist()
+    
+    # Optionally save metadata about the index
+    if metadata:
+        metadata_path = os.path.join(config.INDEX_SAVE_LOCATION, f"{collection_name}_metadata.json")
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f)
+    
+    return os.path.join(config.INDEX_SAVE_LOCATION, collection_name)
 
-# Environment setup
-os.environ['AICORE_CLIENT_ID'] = " "  # Add your SAP BTP client ID
-os.environ['AICORE_CLIENT_SECRET'] = " "  # Add your SAP BTP client secret
-os.environ['AICORE_AUTH_URL'] = " "  # Add your SAP BTP auth URL
-os.environ['AICORE_BASE_URL'] = " "  # Add your SAP BTP base URL
-os.environ['AICORE_RESOURCE_GROUP'] = " "  # Add your SAP BTP resource group
-load_dotenv()
-
-# Initialize AI model
-proxy_client = get_proxy_client("gen-ai-hub")
-llm = init_llm(LLM_CONFIG["model_name"], proxy_client=proxy_client)
-
-# Initialize Vector DB
-if ENABLE_VECTOR_DB:
-    embedding_dim = 768  # Adjust based on the embedding model output
-    if VECTOR_DB_CONFIG["index_type"] == "HNSW":
-        index = faiss.IndexHNSWFlat(embedding_dim, 32)  # 32 is the HNSW parameter
-    else:
-        index = faiss.IndexFlatL2(embedding_dim)  # Use L2 distance for Faiss
-
-# Define refined prompt templates
-DUPLICATE_CHECK_TEMPLATE = """You are a ticket analysis system. Your task is to determine if a new ticket is a duplicate of any existing tickets.
-
-Historical Tickets (Pre-filtered by Company Code and Component):
-{historical_tickets}
-
-New Ticket Details:
-Company Code: {company_code}
-Component: {component}
-Summary: {summary}
-Description: {description}
-
-Instructions:
-1. Focus on semantic similarity between the new ticket and historical tickets.
-2. A ticket is a duplicate if it describes the same issue in a similar context.
-3. Ignore differences in phrasing or wording if the core issue is the same.
-4. Be strict about duplicate detection - only mark as duplicate if the issue is truly the same.
-
-Respond in this EXACT format (replace values appropriately):
-{{"is_duplicate": true/false, "original_ticket_id": "TICKET-123 or null", "confidence": 0.95, "reasoning": "Explanation here"}}"""
-
-FALLBACK_DUPLICATE_CHECK_TEMPLATE = """You are a ticket analysis system. Your task is to determine if a new ticket is a duplicate of any existing tickets.
-
-Historical Tickets (Pre-filtered by Company Code and Component):
-{historical_tickets}
-
-New Ticket Details:
-Company Code: {company_code}
-Component: {component}
-Summary: {summary}
-Description: {description}
-
-Instructions:
-1. The Vector DB did not find a match, so you need to perform a detailed semantic analysis.
-2. Compare the new ticket against historical tickets for similar issues.
-3. A ticket is a duplicate if it describes the same issue in a similar context.
-4. Be strict about duplicate detection - only mark as duplicate if the issue is truly the same.
-
-Respond in this EXACT format (replace values appropriately):
-{{"is_duplicate": true/false, "original_ticket_id": "TICKET-123 or null", "confidence": 0.95, "reasoning": "Explanation here"}}"""
-
-GLOBAL_OUTAGE_TEMPLATE = """You are a ticket analysis system. Determine if this ticket indicates a global outage.
-
-Historical Global Outages:
-{global_outages}
-
-New Ticket:
-Summary: {summary}
-Description: {description}
-
-Respond in this EXACT format (replace values appropriately):
-{{"is_global_outage": true/false, "confidence": 0.95, "reasoning": "Explanation here"}}"""
-
-def format_tickets_for_context(df, max_tickets=20):
-    """Format recent tickets as context for the LLM."""
-    if 'closure_date' in df.columns:
-        df = df.sort_values('closure_date', ascending=False)
-    recent_tickets = df.head(max_tickets)
-    formatted_tickets = []
-    for _, row in recent_tickets.iterrows():
-        ticket = (
-            f"Ticket ID: {row['ticket_id']}\n"
-            f"Company: {row['company_code']}\n"
-            f"Component: {row['component']}\n"
-            f"Summary: {row['summary']}\n"
-            f"Description: {row['description']}\n"
-            "---"
-        )
-        formatted_tickets.append(ticket)
-    return "\n\n".join(formatted_tickets)
-
-def parse_llm_response(response_text, default_response):
-    """Safely parse LLM response and ensure it matches expected format."""
+def load_chroma_store(collection_name="ticket_collection"):
+    """Load ChromaDB vector store from disk."""
+    chroma_path = os.path.join(config.INDEX_SAVE_LOCATION, collection_name)
+    
+    # Check if the directory exists
+    if not os.path.exists(chroma_path):
+        return None
+    
+    # Load the vector store
     try:
-        response_text = response_text.strip()
-        if response_text.startswith("```json"):
-            response_text = response_text.replace("```json", "").replace("```", "")
-        parsed = json.loads(response_text)
-        if "is_duplicate" not in parsed and "is_global_outage" not in parsed:
-            return default_response
-        return parsed
+        vector_store = Chroma(
+            persist_directory=chroma_path,
+            embedding_function=embeddings
+        )
+        return vector_store
     except Exception as e:
-        print(f"Error parsing LLM response: {str(e)}")
-        print(f"Raw response: {response_text}")
-        return default_response
-
-def generate_embedding(text):
-    """Generate embeddings for text using the SAP BTP embedding model."""
-    # Placeholder for embedding generation logic
-    # Replace this with actual API call to SAP BTP embedding model
-    return np.random.rand(768).astype('float32')  # Random embedding for demonstration
-
-def check_duplicate_with_vector_db(ticket_data, master_df):
-    """Check if a ticket is duplicate using Vector DB."""
-    if not ENABLE_VECTOR_DB:
-        return {"is_duplicate": False, "original_ticket_id": None, "confidence": 0.0, "reasoning": "Vector DB disabled"}
+        print(f"Error loading Chroma vector store: {str(e)}")
+        return None
+def create_vector_index(data_records):
+    """Create ChromaDB index from ticket data."""
+    # First check if we have a saved collection
+    vector_store = load_chroma_store()
     
-    # Pre-filter based on company code and component
-    pre_filtered_df = master_df[
-        (master_df['company_code'] == ticket_data['company_code']) &
-        (master_df['component'] == ticket_data['component'])
-    ]
+    # Extract text data for embedding
+    texts = []
+    metadatas = []
+    ids = []
     
-    if pre_filtered_df.empty:
-        return {"is_duplicate": False, "original_ticket_id": None, "confidence": 0.0, "reasoning": "No matching company/component"}
-    
-    # Generate embeddings for the new ticket and pre-filtered tickets
-    new_ticket_embedding = generate_embedding(ticket_data["description"])
-    pre_filtered_embeddings = np.array([generate_embedding(desc) for desc in pre_filtered_df["description"]])
-    
-    # Add embeddings to Vector DB index
-    index.add(pre_filtered_embeddings)
-    
-    # Search for similar tickets in Vector DB
-    distances, indices = index.search(np.array([new_ticket_embedding]), k=5)
-    best_match_index = indices[0][0]
-    best_match_distance = distances[0][0]
-    
-    # Calculate confidence score
-    confidence = 1 - best_match_distance
-    
-    if confidence >= DUPLICATE_THRESHOLDS["definite_duplicate"]:
-        return {
-            "is_duplicate": True,
-            "original_ticket_id": pre_filtered_df.iloc[best_match_index]["ticket_id"],
-            "confidence": confidence,
-            "reasoning": "High confidence match found in Vector DB"
+    for i, record in enumerate(data_records):
+        # Combine summary and description for embedding
+        text = f"{record['summary']} {record['description']}"
+        texts.append(text)
+        
+        # Prepare metadata - store company_code and component
+        metadata = {
+            "ticket_id": record.get("ticket_id", f"ticket_{i}"),
+            "company_code": record.get("company_code", ""),
+            "component": record.get("component", ""),
+            "summary": record.get("summary", ""),
+            "description": record.get("description", "")
         }
-    elif confidence >= DUPLICATE_THRESHOLDS["likely_duplicate"]:
-        return {
-            "is_duplicate": True,
-            "original_ticket_id": pre_filtered_df.iloc[best_match_index]["ticket_id"],
-            "confidence": confidence,
-            "reasoning": "Likely duplicate found in Vector DB"
-        }
-    else:
-        return {"is_duplicate": False, "original_ticket_id": None, "confidence": confidence, "reasoning": "No duplicate found in Vector DB"}
-
-def check_duplicate_with_llm(master_df, ticket_data, is_fallback=False):
-    """Check if a ticket is duplicate using LLM."""
-    if not ENABLE_LLM:
-        return {"is_duplicate": False, "original_ticket_id": None, "confidence": 0.0, "reasoning": "LLM disabled"}
+        metadatas.append(metadata)
+        
+        # Create a unique ID
+        ids.append(record.get("ticket_id", f"ticket_{i}"))
     
+    # If we have data to index
+    if texts:
+        # Create a new vector store if one doesn't exist
+        if vector_store is None:
+            vector_store = Chroma.from_texts(
+                texts=texts,
+                embedding=embeddings,
+                metadatas=metadatas,
+                ids=ids,
+                persist_directory=os.path.join(config.INDEX_SAVE_LOCATION, "ticket_collection")
+            )
+        else:
+            # Add documents to existing store
+            vector_store.add_texts(
+                texts=texts,
+                metadatas=metadatas,
+                ids=ids
+            )
+        
+        # Persist the vector store
+        vector_store.persist()
+        
+        # For compatibility with existing code, also return embeddings as numpy array
+        embeddings_array = np.array([get_embedding(text) for text in texts]).astype(np.float32)
+        
+        return vector_store, embeddings_array
+    
+    # If no data, return empty vector store and empty embeddings array
+    return vector_store if vector_store else None, np.array([])
+
+def search_vector_db(vector_store, query_embedding, k=5):
+    """Search ChromaDB vector store for similar tickets."""
+    if vector_store is None:
+        return np.array([]), np.array([])
+    
+    # Convert query embedding to text for ChromaDB
+    query_text = query_embedding_to_text(query_embedding)
+    
+    # Perform search
+    results = vector_store.similarity_search_with_relevance_scores(
+        query=query_text,
+        k=k
+    )
+    
+    # If no results, return empty arrays
+    if not results:
+        return np.array([]), np.array([])
+    
+    # Extract distances and indices
+    distances = []
+    indices = []
+    
+    for i, (doc, score) in enumerate(results):
+        # Convert similarity score to distance (1 - similarity)
+        # Note: ChromaDB returns similarity scores in [0,1], we convert to distance
+        distance = 1.0 - score
+        distances.append(distance)
+        
+        # Get the index of this document
+        # This is a bit tricky as ChromaDB doesn't return indices directly
+        # We'll use the position in the results as a proxy
+        indices.append(i)
+    
+    return np.array(distances), np.array(indices)
+
+def query_embedding_to_text(embedding):
+    """Convert an embedding back to queryable text.
+    This is a workaround since ChromaDB uses text queries not raw embeddings."""
+    # Option 1: Use a placeholder text and rely on the embedding function
+    return "query_placeholder"
+    
+    # Option 2 (if available): Reverse lookup the most similar document
+    # This would require keeping a cache of (text -> embedding) mappings
+
+def check_duplicate(master_df, ticket_data):
+    """Check if a ticket is duplicate using direct LLM analysis or Vector DB based on config."""
     default_response = {
         "is_duplicate": False,
         "original_ticket_id": None,
         "confidence": 0.0,
         "reasoning": "Unable to perform analysis"
     }
-    
+
+    # Pre-validation: Only process tickets with valid company code and component
+    if config.ENABLE_PRE_FILTERING:
+        is_valid, validation_message = validate_ticket_data(ticket_data)
+        if not is_valid:
+            return {
+                "is_duplicate": False,
+                "original_ticket_id": None,
+                "confidence": 0.0,
+                "reasoning": validation_message
+            }
+
     try:
-        # Use fallback prompt if Vector DB did not find a match
-        prompt_template = FALLBACK_DUPLICATE_CHECK_TEMPLATE if is_fallback else DUPLICATE_CHECK_TEMPLATE
-        prompt = ChatPromptTemplate.from_template(prompt_template)
-        
-        relevant_df = master_df[
-            (master_df['company_code'] == ticket_data['company_code']) |
-            (master_df['component'] == ticket_data['component'])
-        ].copy()
-        if relevant_df.empty:
-            relevant_df = master_df.copy()
-        historical_context = format_tickets_for_context(relevant_df)
-        
-        chain = prompt | llm | StrOutputParser()
-        response = chain.invoke({
-            "historical_tickets": historical_context,
-            "company_code": str(ticket_data["company_code"]),
-            "component": str(ticket_data["component"]),
-            "summary": str(ticket_data["summary"]),
-            "description": str(ticket_data["description"])
-        })
-        return parse_llm_response(response, default_response)
+        # First try Vector DB approach if enabled
+        if config.ENABLE_VECTOR_DB_DUPLICATE_DETECTION:
+            # Pre-filter based on company code and component before searching
+            relevant_df = master_df[
+                (master_df['company_code'] == ticket_data['company_code']) &
+                (master_df['component'] == ticket_data['component'])
+            ].copy()
+
+            # Skip to LLM if no relevant tickets found in Vector DB
+            if not relevant_df.empty:
+                # Create vector index for relevant tickets
+                relevant_records = relevant_df.to_dict(orient="records")
+                vector_store, embeddings = create_vector_index(relevant_records)
+
+                # Generate embedding for new ticket
+                query_text = f"{ticket_data['summary']} {ticket_data['description']}"
+                
+                # Use ChromaDB's native similarity search instead of raw embeddings
+                results = vector_store.similarity_search_with_relevance_scores(
+                    query=query_text,
+                    k=min(5, len(relevant_records)),
+                    filter={
+                        "company_code": ticket_data['company_code'],
+                        "component": ticket_data['component']
+                    }
+                )
+
+                # Skip if no results returned
+                if not results:
+                    return default_response
+
+                # Process similarity scores
+                best_similarity = 0
+                best_match = None
+                
+                for doc, similarity in results:
+                    if similarity > best_similarity:
+                        best_similarity = similarity
+                        best_match = doc
+
+                # Determine duplicate status based on thresholds
+                if best_match and best_similarity:
+                    # Get ticket_id from metadata
+                    matching_ticket_id = best_match.metadata.get('ticket_id')
+                    
+                    if best_similarity >= config.DUPLICATE_THRESHOLDS['definite_duplicate']:
+                        return {
+                            "is_duplicate": True,
+                            "original_ticket_id": matching_ticket_id,
+                            "confidence": best_similarity,
+                            "reasoning": f"Vector similarity score: {best_similarity:.4f} - Definite duplicate"
+                        }
+                    elif best_similarity >= config.DUPLICATE_THRESHOLDS['likely_duplicate']:
+                        return {
+                            "is_duplicate": True,
+                            "original_ticket_id": matching_ticket_id,
+                            "confidence": best_similarity,
+                            "reasoning": f"Vector similarity score: {best_similarity:.4f} - Likely duplicate"
+                        }
+
+        # Fall back to LLM approach if Vector DB not enabled or didn't find a match
+        if config.ENABLE_LLM_DUPLICATE_DETECTION:
+            # Pre-filter for LLM to reduce complexity
+            relevant_df = master_df[
+                (master_df['company_code'] == ticket_data['company_code']) &
+                (master_df['component'] == ticket_data['component'])
+            ].copy()
+
+            # Only use LLM if we have relevant tickets
+            if relevant_df.empty:
+                return {
+                    "is_duplicate": False,
+                    "original_ticket_id": None,
+                    "confidence": 0.0,
+                    "reasoning": "No matching company code and component found"
+                }
+
+            historical_context = format_tickets_for_context(relevant_df)
+
+            # Prepare and execute the chain
+            prompt = ChatPromptTemplate.from_template(DUPLICATE_CHECK_TEMPLATE)
+            chain = prompt | llm | StrOutputParser()
+
+            # Implement retry logic
+            retries = 0
+            while retries < config.MAX_LLM_RETRIES:
+                try:
+                    response = chain.invoke({
+                        "historical_tickets": historical_context,
+                        "company_code": str(ticket_data["company_code"]),
+                        "component": str(ticket_data["component"]),
+                        "summary": str(ticket_data["summary"]),
+                        "description": str(ticket_data["description"])
+                    })
+
+                    result = parse_llm_response(response, default_response)
+                    if result != default_response:
+                        return result
+
+                    retries += 1
+                except Exception as e:
+                    print(f"LLM retry {retries+1}/{config.MAX_LLM_RETRIES} failed: {str(e)}")
+                    retries += 1
+
+            # If we get here, all retries failed
+            return default_response
+
+        # If neither Vector DB nor LLM analysis is enabled
+        return default_response
+
     except Exception as e:
         print(f"Error in check_duplicate: {str(e)}")
         return default_response
 
-def check_duplicate(master_df, ticket_data):
-    """Check if a ticket is duplicate using Vector DB and LLM."""
-    # First, check with Vector DB
-    vector_db_result = check_duplicate_with_vector_db(ticket_data, master_df)
-    if vector_db_result["is_duplicate"]:
-        return vector_db_result
-    
-    # If Vector DB doesn't find a duplicate, check with LLM
-    if ENABLE_LLM:
-        return check_duplicate_with_llm(master_df, ticket_data, is_fallback=True)
-    else:
-        return vector_db_result
+def check_recently_closed_tickets(ticket_data, master_df):
+    """Check if a similar ticket was closed recently (within configured days)."""
+    default_response = {
+        "is_duplicate": False,
+        "original_ticket_id": None,
+        "confidence": 0.0,
+        "reasoning": "No recent similar tickets found"
+    }
 
-# Rest of the functions (load_master_data, load_new_ticket_data, etc.) remain unchanged
+    # Pre-validation
+    is_valid, validation_message = validate_ticket_data(ticket_data)
+    if not is_valid:
+        return default_response
+
+    try:
+        # Pre-filter by company code and component first
+        cutoff_date = datetime.now() - timedelta(days=config.RECENT_TICKETS_DAYS)
+        recent_df = master_df[
+            (master_df["closure_date"] >= cutoff_date) &
+            (master_df['company_code'] == ticket_data['company_code']) &
+            (master_df['component'] == ticket_data['component'])
+        ].copy()
+
+        if recent_df.empty:
+            return default_response
+
+        # Decide which approach to use based on configuration
+        if config.ENABLE_VECTOR_DB_DUPLICATE_DETECTION:
+            # Create vector index for recent tickets
+            recent_records = recent_df.to_dict(orient="records")
+            vector_store, _ = create_vector_index(recent_records)
+            
+            if vector_store is None:
+                return default_response
+
+            # Generate query for new ticket
+            query_text = f"{ticket_data['summary']} {ticket_data['description']}"
+            
+            # Search with filters
+            results = vector_store.similarity_search_with_relevance_scores(
+                query=query_text,
+                k=min(5, len(recent_records)),
+                filter={
+                    "company_code": ticket_data['company_code'],
+                    "component": ticket_data['component']
+                }
+            )
+            
+            # Skip if no results
+            if not results:
+                return default_response
+
+            # Find the best match
+            best_similarity = 0
+            best_match = None
+            
+            for doc, similarity in results:
+                if similarity > best_similarity:
+                    best_similarity = similarity
+                    best_match = doc
+
+            # Check against thresholds
+            if best_match and best_similarity:
+                matching_ticket_id = best_match.metadata.get('ticket_id')
+                
+                if best_similarity >= config.DUPLICATE_THRESHOLDS['definite_duplicate'] or best_similarity >= config.DUPLICATE_THRESHOLDS['likely_duplicate']:
+                    return {
+                        "is_duplicate": True,
+                        "original_ticket_id": matching_ticket_id,
+                        "confidence": best_similarity,
+                        "reasoning": f"Recently closed ticket with vector similarity: {best_similarity:.4f}"
+                    }
+
+            return default_response
+
+        elif config.ENABLE_LLM_DUPLICATE_DETECTION:
+            # Use LLM-based approach as fallback
+            historical_context = format_tickets_for_context(recent_df)
+
+            prompt = ChatPromptTemplate.from_template(DUPLICATE_CHECK_TEMPLATE)
+            chain = prompt | llm | StrOutputParser()
+
+            # Implement retry logic for LLM
+            retries = 0
+            while retries < config.MAX_LLM_RETRIES:
+                try:
+                    response = chain.invoke({
+                        "historical_tickets": historical_context,
+                        "company_code": str(ticket_data["company_code"]),
+                        "component": str(ticket_data["component"]),
+                        "summary": str(ticket_data["summary"]),
+                        "description": str(ticket_data["description"])
+                    })
+
+                    result = parse_llm_response(response, default_response)
+                    if result != default_response:
+                        return result
+
+                    retries += 1
+                except Exception as e:
+                    print(f"LLM retry {retries+1}/{config.MAX_LLM_RETRIES} failed: {str(e)}")
+                    retries += 1
+
+            return default_response
+
+        else:
+            return default_response
+
+    except Exception as e:
+        print(f"Error in check_recently_closed_tickets: {str(e)}")
+        return default_response
