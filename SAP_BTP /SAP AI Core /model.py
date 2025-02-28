@@ -1,253 +1,152 @@
-def evaluate_duplicate_detection(predictions, ground_truth):
-    """
-    Simple evaluation function for duplicate detection system.
-    
-    Args:
-        predictions: List of dictionaries with prediction results 
-                    {'is_duplicate': bool, 'original_ticket_id': str, 'confidence': float}
-        ground_truth: List of dictionaries with actual labels
-                    {'is_duplicate': bool, 'original_ticket_id': str}
-    
-    Returns:
-        Dictionary containing evaluation metrics
-    """
-    # Initialize counters
-    true_positives = 0
-    false_positives = 0
-    true_negatives = 0
-    false_negatives = 0
-    
-    # For ROC curve
-    y_true = []
-    scores = []
-    
-    # For ticket matching accuracy
-    correct_ticket_matches = 0
-    total_actual_duplicates = 0
-    
-    # Process each prediction
-    for pred, truth in zip(predictions, ground_truth):
-        y_true.append(1 if truth['is_duplicate'] else 0)
-        scores.append(pred['confidence'])
-        
-        # Count for confusion matrix
-        if truth['is_duplicate']:
-            total_actual_duplicates += 1
-            if pred['is_duplicate']:
-                true_positives += 1
-                # Check if the original ticket matches
-                if pred['original_ticket_id'] == truth['original_ticket_id']:
-                    correct_ticket_matches += 1
-            else:
-                false_negatives += 1
-        else:
-            if pred['is_duplicate']:
-                false_positives += 1
-            else:
-                true_negatives += 1
-    
-    # Calculate derived metrics
-    total = true_positives + false_positives + true_negatives + false_negatives
-    accuracy = (true_positives + true_negatives) / total if total > 0 else 0
-    
-    precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
-    recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
-    
-    f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-    
-    ticket_match_accuracy = correct_ticket_matches / total_actual_duplicates if total_actual_duplicates > 0 else 0
-    
-    return {
-        "accuracy": accuracy,
-        "precision": precision,
-        "recall": recall,
-        "f1_score": f1,
-        "true_positives": true_positives,
-        "false_positives": false_positives,
-        "true_negatives": true_negatives,
-        "false_negatives": false_negatives,
-        "total_samples": total,
-        "ticket_match_accuracy": ticket_match_accuracy,
-        "y_true": y_true,
-        "scores": scores
-    }
+# Add this to your app.py file
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import roc_curve, auc
+import time
 
-def evaluate_by_threshold(predictions, ground_truth, thresholds=None):
-    """
-    Evaluate system at different confidence thresholds.
-    
-    Args:
-        predictions: List of prediction dictionaries
-        ground_truth: List of ground truth dictionaries
-        thresholds: List of thresholds to evaluate
-        
-    Returns:
-        List of dictionaries with metrics at each threshold
-    """
-    if thresholds is None:
-        thresholds = [0.1, 0.3, 0.5, 0.7, 0.9]
-    
-    results = []
-    
-    for threshold in thresholds:
-        # Apply threshold to predictions
-        thresholded_preds = []
-        for pred in predictions:
-            # Create a new prediction with threshold applied
-            new_pred = pred.copy()
-            new_pred['is_duplicate'] = pred['confidence'] >= threshold
-            thresholded_preds.append(new_pred)
-        
-        # Evaluate with this threshold
-        metrics = evaluate_duplicate_detection(thresholded_preds, ground_truth)
-        metrics['threshold'] = threshold
-        results.append(metrics)
-    
-    return results
+# Import your utils functions
+# from utils import check_duplicate, collect_performance_metrics, prepare_test_data
 
-def evaluate_by_component(predictions, ground_truth, tickets):
-    """
-    Evaluate performance by component.
+def metrics_dashboard():
+    st.title("Ticket Duplication Detection Metrics")
     
-    Args:
-        predictions: List of prediction dictionaries
-        ground_truth: List of ground truth dictionaries
-        tickets: List of original ticket data with component info
+    # File uploader for test data with ground truth
+    st.subheader("Upload Test Data")
+    uploaded_file = st.file_uploader("Choose a CSV file with labeled test data", type="csv")
+    
+    if uploaded_file is not None:
+        # Load test data
+        test_data = prepare_test_data(uploaded_file)
         
-    Returns:
-        Dictionary mapping components to their metrics
-    """
-    # Group by component
-    components = {}
-    
-    for i, ticket in enumerate(tickets):
-        component = ticket['component']
-        if component not in components:
-            components[component] = {
-                'preds': [],
-                'truth': []
-            }
+        # Show test data summary
+        st.write(f"Test dataset loaded: {len(test_data)} tickets")
+        st.write(f"Duplicate tickets: {test_data['is_duplicate'].sum()} ({test_data['is_duplicate'].mean()*100:.1f}%)")
         
-        components[component]['preds'].append(predictions[i])
-        components[component]['truth'].append(ground_truth[i])
-    
-    # Calculate metrics for each component
-    results = {}
-    for component, data in components.items():
-        if len(data['preds']) >= 5:  # Only evaluate components with enough samples
-            metrics = evaluate_duplicate_detection(data['preds'], data['truth'])
-            metrics['sample_count'] = len(data['preds'])
-            results[component] = metrics
-    
-    return results
+        # Button to run evaluation
+        if st.button("Run Evaluation"):
+            with st.spinner("Evaluating model performance..."):
+                # Load master dataset (you'll need to adapt this to your data loading method)
+                master_df = load_master_data()  # Replace with your loading function
+                
+                # Run evaluation
+                metrics = collect_performance_metrics(test_data, master_df, check_duplicate)
+                
+                # Display overall metrics
+                st.subheader("Overall Performance Metrics")
+                
+                # Create metrics columns
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Accuracy", f"{metrics['overall']['accuracy']:.3f}")
+                with col2:
+                    st.metric("Precision", f"{metrics['overall']['precision']:.3f}")
+                with col3:
+                    st.metric("Recall", f"{metrics['overall']['recall']:.3f}")
+                with col4:
+                    st.metric("F1 Score", f"{metrics['overall']['f1_score']:.3f}")
+                
+                # Display confusion matrix
+                st.subheader("Confusion Matrix")
+                cm_data = [
+                    ["True Negatives", "False Positives"],
+                    ["False Negatives", "True Positives"]
+                ]
+                cm_values = [
+                    [metrics['overall']['true_negatives'], metrics['overall']['false_positives']],
+                    [metrics['overall']['false_negatives'], metrics['overall']['true_positives']]
+                ]
+                
+                fig, ax = plt.subplots(figsize=(6, 4))
+                sns.heatmap(cm_values, annot=True, fmt='d', cmap='Blues', 
+                            xticklabels=["Not Duplicate", "Duplicate"],
+                            yticklabels=["Not Duplicate", "Duplicate"])
+                plt.ylabel('Actual')
+                plt.xlabel('Predicted')
+                st.pyplot(fig)
+                
+                # Display ROC curve
+                st.subheader("ROC Curve")
+                y_true = metrics['overall']['y_true']
+                scores = metrics['overall']['scores']
+                
+                fpr, tpr, _ = roc_curve(y_true, scores)
+                roc_auc = auc(fpr, tpr)
+                
+                fig, ax = plt.subplots(figsize=(8, 6))
+                plt.plot(fpr, tpr, color='darkorange', lw=2, 
+                         label=f'ROC curve (AUC = {roc_auc:.2f})')
+                plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+                plt.xlim([0.0, 1.0])
+                plt.ylim([0.0, 1.05])
+                plt.xlabel('False Positive Rate')
+                plt.ylabel('True Positive Rate')
+                plt.title('Receiver Operating Characteristic')
+                plt.legend(loc="lower right")
+                st.pyplot(fig)
+                
+                # Performance by threshold
+                st.subheader("Performance by Confidence Threshold")
+                threshold_data = pd.DataFrame(metrics['by_threshold'])
+                
+                fig, ax = plt.subplots(figsize=(10, 6))
+                plt.plot(threshold_data['threshold'], threshold_data['precision'], 'b-', label='Precision')
+                plt.plot(threshold_data['threshold'], threshold_data['recall'], 'g-', label='Recall')
+                plt.plot(threshold_data['threshold'], threshold_data['f1_score'], 'r-', label='F1 Score')
+                plt.xlabel('Confidence Threshold')
+                plt.ylabel('Score')
+                plt.title('Performance vs Confidence Threshold')
+                plt.legend()
+                plt.grid(True)
+                st.pyplot(fig)
+                
+                # Show metrics by component
+                st.subheader("Performance by Component")
+                
+                # Convert component metrics to DataFrame
+                component_data = []
+                for component, data in metrics['by_component'].items():
+                    component_data.append({
+                        'Component': component,
+                        'Sample Count': data['sample_count'],
+                        'Precision': data['precision'],
+                        'Recall': data['recall'],
+                        'F1 Score': data['f1_score']
+                    })
+                
+                if component_data:
+                    component_df = pd.DataFrame(component_data)
+                    st.dataframe(component_df)
+                    
+                    # Plot component F1 scores
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    component_df = component_df.sort_values('F1 Score', ascending=False)
+                    sns.barplot(x='F1 Score', y='Component', data=component_df)
+                    plt.title('F1 Score by Component')
+                    plt.xlim(0, 1)
+                    st.pyplot(fig)
+                else:
+                    st.write("Not enough data to analyze by component")
+                
+                # Timing metrics
+                st.subheader("Processing Time Metrics")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Mean Processing Time", f"{metrics['timing']['mean_time']:.3f} sec")
+                with col2:
+                    st.metric("Maximum Time", f"{metrics['timing']['max_time']:.3f} sec")
+                with col3:
+                    st.metric("Total Processing Time", f"{metrics['timing']['total_time']:.1f} sec")
 
-def collect_performance_metrics(test_data, master_df, check_duplicate_func):
-    """
-    Process test data and collect performance metrics.
-    
-    Args:
-        test_data: DataFrame with test tickets and ground truth labels
-        master_df: DataFrame with historical tickets
-        check_duplicate_func: Function to check for duplicates
-        
-    Returns:
-        Dictionary with all evaluation metrics
-    """
-    predictions = []
-    ground_truth = []
-    tickets = []
-    
-    # Process each test case
-    for _, row in test_data.iterrows():
-        # Extract ticket data
-        ticket = {
-            'ticket_id': row['ticket_id'],
-            'company_code': row['company_code'],
-            'component': row['component'],
-            'summary': row['summary'],
-            'description': row['description']
-        }
-        
-        # Get prediction
-        start_time = time.time()
-        prediction = check_duplicate_func(master_df, ticket)
-        end_time = time.time()
-        prediction['processing_time'] = end_time - start_time
-        
-        # Store prediction
-        predictions.append(prediction)
-        
-        # Store ground truth
-        truth = {
-            'is_duplicate': bool(row['is_duplicate']),  # Ensure boolean
-            'original_ticket_id': row['original_ticket_id'] if row['is_duplicate'] else None
-        }
-        ground_truth.append(truth)
-        tickets.append(ticket)
-    
-    # Calculate overall metrics
-    overall_metrics = evaluate_duplicate_detection(predictions, ground_truth)
-    
-    # Calculate threshold-based metrics
-    threshold_metrics = evaluate_by_threshold(predictions, ground_truth)
-    
-    # Calculate component-based metrics
-    component_metrics = evaluate_by_component(predictions, ground_truth, tickets)
-    
-    # Calculate timing metrics
-    processing_times = [p['processing_time'] for p in predictions]
-    timing_metrics = {
-        'mean_time': sum(processing_times) / len(processing_times),
-        'max_time': max(processing_times),
-        'min_time': min(processing_times),
-        'total_time': sum(processing_times)
-    }
-    
-    return {
-        'overall': overall_metrics,
-        'by_threshold': threshold_metrics,
-        'by_component': component_metrics,
-        'timing': timing_metrics
-    }
-
-# Function to prepare test data with labels from a CSV file
-def prepare_test_data(test_csv_path):
-    """
-    Load and prepare test data from CSV.
-    
-    The CSV should contain:
-    - ticket_id: ID of the test ticket
-    - company_code: Company code
-    - component: Ticket component
-    - summary: Ticket summary
-    - description: Ticket description
-    - is_duplicate: Boolean flag (1/0) indicating if ticket is a duplicate
-    - original_ticket_id: ID of the original ticket if is_duplicate=1
-    
-    Returns:
-        DataFrame with test data
-    """
-    import pandas as pd
-    
-    # Load CSV
-    test_data = pd.read_csv(test_csv_path)
-    
-    # Ensure required columns exist
-    required_cols = ['ticket_id', 'company_code', 'component', 'summary', 
-                     'description', 'is_duplicate', 'original_ticket_id']
-    
-    for col in required_cols:
-        if col not in test_data.columns:
-            if col == 'original_ticket_id':
-                # Create empty column for original_ticket_id if missing
-                test_data['original_ticket_id'] = None
-            else:
-                raise ValueError(f"Required column '{col}' not found in test data")
-    
-    # Ensure data types
-    test_data['is_duplicate'] = test_data['is_duplicate'].astype(bool)
-    
-    # Ensure original_ticket_id is None for non-duplicates
-    test_data.loc[~test_data['is_duplicate'], 'original_ticket_id'] = None
-    
-    return test_data
+# Add this to your app.py main function:
+# if __name__ == "__main__":
+#     st.sidebar.title("Navigation")
+#     page = st.sidebar.selectbox("Choose a page", ["Ticket Analysis", "Metrics Dashboard"])
+#     
+#     if page == "Ticket Analysis":
+#         # Your existing ticket analysis page
+#         pass
+#     elif page == "Metrics Dashboard":
+#         metrics_dashboard()
