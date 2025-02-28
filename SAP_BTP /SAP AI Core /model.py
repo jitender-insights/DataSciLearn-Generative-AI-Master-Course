@@ -706,14 +706,12 @@ def check_recently_closed_tickets(ticket_data, master_df):
     try:
         # Pre-filter by company code, component, and recent closure date
         cutoff_date = datetime.now() - timedelta(days=config.RECENT_TICKETS_DAYS)
-        filter_criteria = {
-            'company_code': ticket_data['company_code'],
-            'component': ticket_data['component']
-        }
         
-        # Apply date filter separately since it's not an equality filter
-        recent_df = prefilter_tickets(master_df, ticket_data)
-        recent_df = recent_df[recent_df["closure_date"] >= cutoff_date].copy()
+        # Use the centralized prefilter function first
+        filtered_df = prefilter_tickets(master_df, ticket_data)
+        
+        # Then apply date filter
+        recent_df = filtered_df[filtered_df["closure_date"] >= cutoff_date].copy()
 
         if recent_df.empty:
             logger.info("No recently closed tickets found")
@@ -764,4 +762,107 @@ def check_recently_closed_tickets(ticket_data, master_df):
 
                 # Find the best match
                 if not similarities:
-                    return default_
+                    logger.info("No similarities calculated for recently closed tickets")
+                    return default_response
+
+                best_idx = -1
+                best_similarity = 0
+
+                for i, similarity in enumerate(similarities):
+                    if similarity > best_similarity:
+                        best_similarity = similarity
+                        best_idx = i
+
+                # Get the matching ticket using the record map
+                if best_idx >= 0 and best_idx < len(indices):
+                    vector_idx = indices[best_idx]
+                    if vector_idx in record_map:
+                        original_idx = record_map[vector_idx]
+                        
+                        # Check if this index exists in the dataframe
+                        if original_idx in recent_df.index:
+                            matching_ticket = recent_df.loc[original_idx]
+                            
+                            # Check against thresholds
+                            if best_similarity >= config.DUPLICATE_THRESHOLDS['definite_duplicate']:
+                                result = {
+                                    "is_duplicate": True,
+                                    "original_ticket_id": matching_ticket['ticket_id'],
+                                    "confidence": best_similarity,
+                                    "reasoning": f"Recently closed ticket with vector similarity: {best_similarity:.4f} - Definite duplicate"
+                                }
+                                performance_tracker.record_duplicate_result("recent_vector", True)
+                                return result
+                            elif best_similarity >= config.DUPLICATE_THRESHOLDS['likely_duplicate']:
+                                result = {
+                                    "is_duplicate": True,
+                                    "original_ticket_id": matching_ticket['ticket_id'],
+                                    "confidence": best_similarity,
+                                    "reasoning": f"Recently closed ticket with vector similarity: {best_similarity:.4f} - Likely duplicate"
+                                }
+                                performance_tracker.record_duplicate_result("recent_vector", True)
+                                return result
+                
+                logger.info(f"Vector search found recently closed tickets but similarity ({best_similarity:.4f}) below threshold")
+                performance_tracker.record_duplicate_result("recent_vector", False)
+                return default_response
+                
+            except Exception as e:
+                logger.error(f"Vector-based recently closed ticket detection failed: {str(e)}")
+                performance_tracker.record_duplicate_result("recent_vector", False)
+                # Continue to LLM-based approach as fallback
+                
+        # Fall back to LLM approach if Vector DB not enabled or didn't find a match
+        if hasattr(config, "ENABLE_LLM_DUPLICATE_DETECTION") and config.ENABLE_LLM_DUPLICATE_DETECTION:
+            logger.info("Attempting LLM-based recently closed ticket detection")
+            
+            historical_context = format_tickets_for_context(recent_df)
+
+            # Prepare and execute the chain
+            prompt = ChatPromptTemplate.from_template(DUPLICATE_CHECK_TEMPLATE)
+            chain = prompt | llm | StrOutputParser()
+
+            # Implement retry logic
+            retries = 0
+            while retries < config.MAX_LLM_RETRIES:
+                try:
+                    start_llm_time = time.time()
+                    response = chain.invoke({
+                        "historical_tickets": historical_context,
+                        "company_code": str(ticket_data["company_code"]),
+                        "component": str(ticket_data["component"]),
+                        "summary": str(ticket_data["summary"]),
+                        "description": str(ticket_data["description"])
+                    })
+                    llm_elapsed = time.time() - start_llm_time
+                    performance_tracker.record_timing("llm_calls", llm_elapsed)
+
+                    result = parse_llm_response(response, default_response)
+                    # Modify reasoning to indicate this is from recently closed check
+                    if result != default_response and result.get("is_duplicate", False):
+                        result["reasoning"] = f"Recently closed ticket: {result['reasoning']}"
+                        performance_tracker.record_duplicate_result("recent_llm", True)
+                        return result
+
+                    retries += 1
+                    logger.warning(f"Recently closed LLM response parsing failed, retry {retries}/{config.MAX_LLM_RETRIES}")
+                except Exception as e:
+                    logger.error(f"Recently closed LLM retry {retries+1}/{config.MAX_LLM_RETRIES} failed: {str(e)}")
+                    retries += 1
+                    time.sleep(1)  # Add backoff
+
+            # If we get here, all retries failed
+            logger.error("All recently closed LLM retries failed")
+            performance_tracker.record_duplicate_result("recent_llm", False)
+            return default_response
+
+        # If neither Vector DB nor LLM analysis is enabled
+        logger.warning("No recently closed ticket detection methods enabled")
+        return default_response
+
+    except Exception as e:
+        logger.error(f"Error in check_recently_closed_tickets: {str(e)}")
+        return default_response
+    finally:
+        total_elapsed = time.time() - start_time
+        logger.info(f"Recently closed ticket check completed in {total_elapsed:.4f}s")
