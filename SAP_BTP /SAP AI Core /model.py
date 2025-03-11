@@ -1,12 +1,3 @@
-import requests
-import base64
-
-# SAP Translation Hub configuration from your JSON credentials
-CLIENT_ID = "sb-16e2a9a4-d030-4808-ba73-0a28f190e064!b412892|document-translation-us10!b1112"
-CLIENT_SECRET = "a65081bf-6054-4b78-8834-260c1d16ddd1$CHhzPzm7xNzqrZo4B6RoEPmB7jKcGBNlhTYdYJjp-MM="
-AUTH_URL = "https://1a9f080atrial.authentication.us10.hana.ondemand.com/oauth/token"
-API_BASE_URL = "https://document-translation.api.us10.translationhub.cloud.sap"
-
 def get_token():
     """Retrieve the authentication token using client credentials."""
     auth_string = f"{CLIENT_ID}:{CLIENT_SECRET}"
@@ -24,31 +15,29 @@ def get_token():
         print(f"Authentication failed: {response.status_code}\n{response.text}")
         return None
 
-def translate_document(file_path, source_lang="en-US", target_lang="es"):
+def translate_document(file_path, source_lang="es-ES", target_lang="en-US"):
     """Translate document content using POST /api/v1/translation."""
     token = get_token()
     if not token:
         return None
 
-    # Read file content
+    # Read the file content
     with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # Headers include Accept-Language to localize error messages (per documentation)
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "Accept-Language": "en"  # Localize error messages in English
     }
     
-    # The payload includes sourceLanguage, targetLanguages, and the file content under "data"
+    # Updated payload with singular targetLanguage field and the file content under "data"
     payload = {
         "sourceLanguage": source_lang,
-        "targetLanguages": [target_lang],
+        "targetLanguage": target_lang,
         "data": content
     }
 
-    # Use the correct endpoint: POST /api/v1/translation
     url = f"{API_BASE_URL}/api/v1/translation"
     print(f"Trying endpoint: {url}")
     
