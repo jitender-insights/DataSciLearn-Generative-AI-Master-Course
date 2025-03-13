@@ -40,14 +40,14 @@
     </div>
     <button onclick="processTicket()">Process Ticket</button>
    
-    <!-- New section for duplicate decision drop down -->
+    <!-- Section for duplicate decision drop down -->
     <div id="duplicate_decision_section" style="display:none; margin-top:20px;">
         <h2>Please select duplicate decision</h2>
         <select id="duplicate_decision_select"></select>
         <button onclick="submitDuplicateDecision()">Submit Duplicate Decision</button>
     </div>
    
-    <!-- New section for classification decision drop down -->
+    <!-- Section for classification decision drop down -->
     <div id="classification_decision_section" style="display:none; margin-top:20px;">
         <h2>Please select classification decision</h2>
         <select id="classification_decision_select"></select>
@@ -71,9 +71,10 @@
         </div>
     </div>
     <script>
-        // Global variable to store the "ticket_data" from the server
+        // Global variables to store data received from the server
         let globalTicketData = null;
- 
+        let globalDuplicateDebug = {};  // New variable to store duplicate_debug info
+
         function processTicket() {
             const summary = document.getElementById('summary').value.trim();
             const description = document.getElementById('description').value.trim();
@@ -94,16 +95,19 @@
                     alert(data.error);
                     return;
                 }
-                // Store ticket_data in our global variable
+                // Store ticket_data and duplicate_debug globally
                 if (data.ticket_data) {
                     globalTicketData = data.ticket_data;
+                }
+                if (data.duplicate_debug) {
+                    globalDuplicateDebug = data.duplicate_debug;
                 }
                
                 document.getElementById('result').style.display = 'block';
                 document.getElementById('message').innerText = data.message || '';
                
                 if (data.action && data.action === 'duplicate_decision') {
-                    // Show the duplicate decision section
+                    // Show duplicate decision section
                     document.getElementById('duplicate_decision_section').style.display = 'block';
                     const dupSelect = document.getElementById('duplicate_decision_select');
                     dupSelect.innerHTML = '';
@@ -115,7 +119,7 @@
                     });
                 }
                 else if (data.action && data.action === 'classification_decision') {
-                    // Show the classification decision section
+                    // Show classification decision section
                     document.getElementById('classification_decision_section').style.display = 'block';
                     const classSelect = document.getElementById('classification_decision_select');
                     classSelect.innerHTML = '';
@@ -125,7 +129,6 @@
                         optionElem.text = opt;
                         classSelect.appendChild(optionElem);
                     });
-                    // Build debug and other info if available
                     if (data.duplicate_debug) {
                         buildDebugInfo(data.duplicate_debug, 'duplicate_debug');
                     }
@@ -143,7 +146,7 @@
                     }
                 }
                 else {
-                    // No special action: either it's a subtask or a final classification
+                    // Handle subtask or final classification response
                     if (data.subtask) {
                         let subtaskObj = data.subtask;
                         let subtaskHTML = '<table><tr><th>Field</th><th>Value</th></tr>';
@@ -171,7 +174,7 @@
                             buildAnswerRelevanceTable(data.answer_relevance, 'answer_relevance');
                         }
                     }
-                    // Optionally reload page after a few seconds
+                    // Optionally reload page after a few seconds:
                     // setTimeout(function(){ location.reload(); }, 3000);
                 }
             })
@@ -188,7 +191,7 @@
             const component = document.getElementById('component').value.trim();
             const company_code = document.getElementById('company_code').value.trim();
            
-            // Pass globalTicketData forward with the request
+            // Include both globalTicketData and globalDuplicateDebug in the request
             fetch('/duplicate_decision', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -198,12 +201,12 @@
                     description,
                     component,
                     company_code,
-                    ticket_data: globalTicketData
+                    ticket_data: globalTicketData,
+                    duplicate_debug: globalDuplicateDebug
                 })
             })
             .then(response => response.json())
             .then(data => {
-                // If subtask data is returned (i.e. user accepted duplicate)
                 if (data.subtask) {
                     document.getElementById('result').style.display = 'block';
                     let subtaskObj = data.subtask;
@@ -216,10 +219,8 @@
                     if (data.duplicate_debug) {
                         buildDebugInfo(data.duplicate_debug, 'duplicate_debug');
                     }
-                    // Hide the duplicate decision section after processing
                     document.getElementById('duplicate_decision_section').style.display = 'none';
                 } else if (data.classification) {
-                    // For "reject duplicate" scenario where classification is returned
                     document.getElementById('result').style.display = 'block';
                     buildClassificationTable(data.classification, 'classification');
                     if (data.similar_tickets) {
