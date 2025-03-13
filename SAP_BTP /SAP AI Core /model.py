@@ -1,190 +1,249 @@
-@app.route('/process_ticket', methods=['POST'])
-def process_ticket():
-    """
-    Main endpoint to process the ticket:
-      1. Checks for duplicates.
-      2. If duplicate, returns subtask info + debug info for duplicates.
-      3. Otherwise, classifies with different confidence messages:
-         - High confidence  (>= config.CLASSIFICATION_HIGH_CONF_THRESHOLD)
-         - Moderate         (>= config.CLASSIFICATION_MODERATE_CONF_THRESHOLD and < high threshold)
-         - Low              (< config.CLASSIFICATION_MODERATE_CONF_THRESHOLD)
-    """
-    try:
-        data = request.json
-        if not data:
-            logging.error("No JSON data received in process_ticket")
-            return jsonify({"error": "No JSON data received"}), 400
-        summary = data.get("Summary", data.get("summary", "")).strip()
-        description = data.get("Description", data.get("description", "")).strip()
-        component = data.get("Component", data.get("component", "")).strip()
-        company_code = data.get("Company_Code", data.get("company_code", "")).strip()
-
-        # Mandatory fields
-        if not summary:
-            logging.error("Summary is mandatory and cannot be blank.")
-            return jsonify({"error": "Summary is mandatory and cannot be blank."}), 400
-        if not description:
-            logging.error("Description is mandatory and cannot be blank.")
-            return jsonify({"error": "Description is mandatory and cannot be blank."}), 400
-        if not component:
-            logging.error("Component is mandatory and cannot be blank.")
-            return jsonify({"error": "Component is mandatory and cannot be blank."}), 400
-        if not company_code:
-            logging.error("Company Code is mandatory and cannot be blank.")
-            return jsonify({"error": "Company Code is mandatory and cannot be blank."}), 400
-
-        logging.debug(
-            f"Process Ticket - Received: Summary='{summary}', "
-            f"Description='{description}', Company_Code='{company_code}', Component='{component}'"
-        )
-
-        from analysis import analyze_ticket_data  # Adjust to your code
-        is_valid, response_message = analyze_ticket_data(summary, description, component, company_code)
-        if not is_valid:
-            logging.warning("Insufficient ticket data")
-            return jsonify({"error": response_message}), 400
-        # 1. Check for duplicates
-        duplicate_result = check_duplicate_ticket(
-            {
-                "Summary": summary,
-                "Description": description,
-                "Company_Code": company_code,
-                "Component": component
-            },
-            vectorstore,
-            embeddings
-        )
-        logging.debug(f"Duplicate detection result: {duplicate_result}")
-
-        # Extract duplicate metadata
-        duplicate_category = duplicate_result.get("duplicate_category", "")
-        similarity = duplicate_result.get("similarity", 0.0)
-        reasoning = duplicate_result.get("reasoning", "")
-        is_duplicate_flag = duplicate_result.get("is_duplicate", False)
-        original_ticket_id = duplicate_result.get("original_ticket_id", "")
-
-        # Build a base debug dict that we will return in all branches
-        duplicate_debug = {
-            "duplicate_category": duplicate_category,
-            "is_duplicate": str(is_duplicate_flag),
-            "original_ticket_id": str(original_ticket_id),
-            "similarity": str(similarity),
-            "reasoning": reasoning if reasoning else ""
-        }
-        # --------------------------------------------------------------------
-        # A) Strong duplicate: "Likely duplicate" or "Combined duplicate"
-        # --------------------------------------------------------------------
-        if is_duplicate_flag and duplicate_category in ["Likely duplicate", "Combined duplicate"]:
-            subtask = create_subtask(original_ticket_id, {"Description": description})
-            logging.info(f"Duplicate detected for ticket ID {original_ticket_id}")
-            return jsonify({
-                "message": (
-                    "Duplicate ticket detected, Creating subtask in JIRA.\n"
-                    "Changing Status to 'DUPLICATE_VERIFICATION_NEEDED'"
-                ),
-                "subtask": subtask,
-                "duplicate_debug": duplicate_debug
+<!DOCTYPE html>
+<html>
+<head>
+    <title>JIRA Ticket Classification & Duplicate Detection</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background-color: #f8f9fa; }
+        h1 { text-align: center; color: #333; }
+        .form-group { margin-bottom: 15px; }
+        label { font-weight: bold; }
+        input[type="text"], textarea, select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
+        button { background-color: #007bff; color: white; padding: 12px 18px; border: none; border-radius: 5px; cursor: pointer; width: 100%; margin-top: 10px; }
+        #result { margin-top: 20px; padding: 15px; border-radius: 5px; background-color: #ffffff; box-shadow: 0px 2px 10px rgba(0, 0, 0, 0.1); display: none; }
+        .bold-message { font-weight: bold; color: #d9534f; text-align: center; margin-top: 10px; font-size: 18px; }
+        .debug-toggle { margin-top: 10px; background-color: #28a745; color: white; width: 100%; padding: 10px; border: none; border-radius: 5px; cursor: pointer; }
+        #debug-section { display: none; margin-top: 15px; padding: 10px; background-color: #f1f1f1; border-radius: 5px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; font-size: 14px; }
+        th { background-color: #007bff; color: #fff; }
+        .progress-bar { height: 20px; background-color: #e0e0e0; border-radius: 10px; margin-top: 5px; overflow: hidden; width: 100px; }
+        .progress { height: 100%; background-color: #4CAF50; text-align: center; line-height: 20px; color: white; }
+    </style>
+</head>
+<body>
+    <h1>JIRA Ticket Classification & Duplicate Detection</h1>
+    <div class="form-group">
+        <label for="summary">Summary:</label>
+        <input type="text" id="summary" name="summary" placeholder="Enter a brief summary">
+    </div>
+    <div class="form-group">
+        <label for="description">Description:</label>
+        <textarea id="description" name="description" placeholder="Enter a detailed description" rows="10"></textarea>
+    </div>
+    <div class="form-group">
+        <label for="component">Component:</label>
+        <input type="text" id="component" name="component">
+    </div>
+    <div class="form-group">
+        <label for="company_code">Company Code:</label>
+        <input type="text" id="company_code" name="company_code">
+    </div>
+    <!-- Duplicate Decision dropdown (hidden by default) -->
+    <div class="form-group" id="duplicate_decision_group" style="display:none;">
+        <label for="duplicate_decision">Duplicate Decision:</label>
+        <select id="duplicate_decision" name="duplicate_decision">
+            <option value="">--Select Option--</option>
+            <option value="accept duplicate">Accept Duplicate</option>
+            <option value="reject duplicate">Reject Duplicate</option>
+        </select>
+    </div>
+    <!-- Classification Decision dropdown (hidden by default) -->
+    <div class="form-group" id="classification_decision_group" style="display:none;">
+        <label for="classification_decision">Classification Decision:</label>
+        <select id="classification_decision" name="classification_decision">
+            <option value="">--Select Option--</option>
+            <option value="accept classification">Accept Classification</option>
+            <option value="reject classification">Reject Classification</option>
+        </select>
+    </div>
+    <button onclick="processTicket()">Process Ticket</button>
+    <div id="result">
+        <h2>Result</h2>
+        <div id="classification"></div>
+        <p class="bold-message" id="message"></p>
+        <button class="debug-toggle" onclick="toggleDebug()">Show Debug Info</button>
+        <div id="debug-section">
+            <h3>Duplicate Debug</h3>
+            <div id="duplicate_debug"></div>
+            <h3>Similar Tickets</h3>
+            <div id="similar_tickets"></div>
+            <h3>Context Relevance</h3>
+            <div id="context_relevance"></div>
+            <h3>Answer Relevance</h3>
+            <div id="answer_relevance"></div>
+        </div>
+    </div>
+    <script>
+        function processTicket() {
+            const summary = document.getElementById('summary').value.trim();
+            const description = document.getElementById('description').value.trim();
+            const component = document.getElementById('component').value.trim();
+            const company_code = document.getElementById('company_code').value.trim();
+            // Retrieve values from dropdowns only if visible
+            const duplicateDecisionElem = document.getElementById('duplicate_decision');
+            const classificationDecisionElem = document.getElementById('classification_decision');
+            const duplicate_decision = duplicateDecisionElem ? duplicateDecisionElem.value.trim() : "";
+            const classification_decision = classificationDecisionElem ? classificationDecisionElem.value.trim() : "";
+            
+            if (!summary || !description || !component || !company_code) {
+                alert('Summary, Description, Company Code, and Component are mandatory.');
+                return;
+            }
+            fetch('/process_ticket', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ summary, description, component, company_code, duplicate_decision, classification_decision })
             })
-        # --------------------------------------------------------------------
-        # B) May be duplicate (moderate similarity) – require agent decision
-        # --------------------------------------------------------------------
-        elif duplicate_category.lower() == "may be duplicate":
-            # Check for agent decision for duplicate handling
-            duplicate_decision = data.get("duplicate_decision", "").strip().lower()
-            if duplicate_decision in ["accept duplicate", "accept_duplicate"]:
-                subtask = create_subtask(original_ticket_id, {"Description": description})
-                message = "Ticket flagged as 'May be duplicate' and agent accepted duplicate. Creating subtask in JIRA."
-                logging.info(message)
-                return jsonify({
-                    "message": message,
-                    "subtask": subtask,
-                    "duplicate_debug": duplicate_debug
-                })
-            elif duplicate_decision in ["reject duplicate", "reject_duplicate"]:
-                # Agent has chosen to reject duplicate handling so proceed to classification
-                logging.info("Ticket flagged as 'May be duplicate' but agent rejected duplicate. Proceeding with classification.")
-                # Optionally update duplicate_debug with extra reasoning:
-                duplicate_debug["reasoning"] = f"May be duplicate: {reasoning}" if reasoning else "Moderate similarity observed. Further evaluation needed."
-                confidence_message = "Ticket is flagged as 'May be duplicate' but agent rejected duplicate. Proceeding with classification."
-                # Fall-through to classification logic below:
-            else:
-                message = ("Ticket flagged as 'May be duplicate'. Awaiting agent decision. "
-                           "Please provide 'duplicate_decision' as 'accept duplicate' or 'reject duplicate'.")
-                logging.info(message)
-                return jsonify({"message": message, "duplicate_debug": duplicate_debug})
-        # --------------------------------------------------------------------
-        # C) Not a duplicate or classification after rejecting duplicate in may be branch
-        # --------------------------------------------------------------------
-        logging.info("No strong duplicate detected. Proceeding with classification & confidence logic.")
-        if not reasoning:
-            duplicate_debug["reasoning"] = "No strong similarity found. Ticket is not a duplicate."
-        retrieved_tickets = retrieve_and_rerank_tickets(vectorstore, summary, description, k=5)
-        classification = generate_response_with_prompt(llm, retrieved_tickets, summary, description)
-        # Evaluate final confidence from best ticket's Combined_Score
-        confidence_message = ""
-        default_status = "Manual_Classification_Required"
-        if retrieved_tickets:
-            best_ticket = retrieved_tickets[0]
-            best_score = best_ticket["Combined_Score"]
-            if best_score >= config.CLASSIFICATION_HIGH_CONF_THRESHOLD:
-                confidence_message = (
-                    "Ticket is not duplicate. High confidence match. "
-                    "Classifying ticket now and updating JIRA status to 'classified'."
-                )
-                default_status = "classified"
-            elif best_score >= config.CLASSIFICATION_MODERATE_CONF_THRESHOLD:
-                # New logic: require agent decision for moderate similarity classification
-                classification_decision = data.get("classification_decision", "").strip().lower()
-                if classification_decision in ["accept classification", "accept_classification"]:
-                    confidence_message = (
-                        "Ticket is not duplicate. Moderate confidence match. Agent accepted classification. "
-                        "Updating JIRA status to 'classified'."
-                    )
-                    default_status = "classified"
-                elif classification_decision in ["reject classification", "reject_classification"]:
-                    confidence_message = (
-                        "Ticket is not duplicate. Moderate confidence match. Agent rejected classification. "
-                        "Updating JIRA status to 'Manual_Classification_Required'."
-                    )
-                    default_status = "Manual_Classification_Required"
-                else:
-                    confidence_message = (
-                        "Ticket is moderate confidence. Awaiting agent decision for classification. "
-                        "Please provide 'classification_decision' as 'accept classification' or 'reject classification'."
-                    )
-                    return jsonify({
-                        "message": confidence_message,
-                        "duplicate_debug": duplicate_debug
-                    })
-            else:
-                confidence_message = (
-                    "Ticket is not duplicate. Low confidence match. Not making any change in JIRA status. "
-                    "Pushing ticket for manual classification with status 'Manual_Classification_Required'."
-                )
-                default_status = "Manual_Classification_Required"
-        else:
-            best_score = 0.0
-            confidence_message = "No similar tickets found; cannot compute confidence."
-            default_status = "Manual_Classification_Required"
-        # Update the classification result with the final status
-        try:
-            classification_dict = json.loads(classification)
-        except Exception as e:
-            classification_dict = {}
-        classification_dict["Status"] = default_status
-        classification = json.dumps(classification_dict)
-        const_query = normalize_text(f"{summary} {description}")
-        context_relevance = evaluate_context_relevance(const_query, retrieved_tickets, embeddings)
-        answer_relevance = evaluate_answer_relevance(const_query, classification, retrieved_tickets, embeddings)
-        return jsonify({
-            "message": confidence_message,
-            "classification": classification,
-            "similar_tickets": retrieved_tickets,
-            "context_relevance": context_relevance,
-            "answer_relevance": answer_relevance,
-            "duplicate_debug": duplicate_debug
-        })
-    except Exception as e:
-        logging.error(f"Error in process_ticket: {str(e)}")
-        logging.error(traceback.format_exc())
-        return jsonify({"error": str(e)}), 500
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    alert(data.error);
+                    return;
+                }
+                document.getElementById('result').style.display = 'block';
+                document.getElementById('message').innerText = data.message || '';
+
+                // Based on the returned message, decide whether to show dropdowns:
+                const msg = data.message.toLowerCase();
+                // Show duplicate decision dropdown only if awaiting duplicate decision
+                if (msg.includes("awaiting agent decision") && msg.includes("duplicate")) {
+                    document.getElementById('duplicate_decision_group').style.display = 'block';
+                } else {
+                    document.getElementById('duplicate_decision_group').style.display = 'none';
+                }
+                // Show classification decision dropdown only if awaiting classification decision
+                if (msg.includes("awaiting agent decision") && msg.includes("classification")) {
+                    document.getElementById('classification_decision_group').style.display = 'block';
+                } else {
+                    document.getElementById('classification_decision_group').style.display = 'none';
+                }
+                
+                // If a duplicate is detected:
+                if (data.subtask) {
+                    // Show the subtask JSON in the classification section
+                    let subtaskObj = data.subtask;
+                    let subtaskHTML = '<table><tr><th>Field</th><th>Value</th></tr>';
+                    for (const [key, val] of Object.entries(subtaskObj)) {
+                        subtaskHTML += `<tr><td>${key}</td><td>${val}</td></tr>`;
+                    }
+                    subtaskHTML += '</table>';
+                    document.getElementById('classification').innerHTML = subtaskHTML;
+                    
+                    // Display duplicate debug info in the debug section
+                    if (data.duplicate_debug) {
+                        let dupDebugHTML = '<table><tr><th>Field</th><th>Value</th></tr>';
+                        for (const [key, val] of Object.entries(data.duplicate_debug)) {
+                            dupDebugHTML += `<tr><td>${key}</td><td>${val}</td></tr>`;
+                        }
+                        dupDebugHTML += '</table>';
+                        document.getElementById('duplicate_debug').innerHTML = dupDebugHTML;
+                    }
+                }
+                // If not a duplicate, show classification & debug as before
+                else if (data.classification) {
+                    buildClassificationTable(data.classification, 'classification');
+                    buildSimilarTicketsTable(data.similar_tickets, 'similar_tickets');
+                    buildContextRelevanceTable(data.context_relevance, 'context_relevance');
+                    buildAnswerRelevanceTable(data.answer_relevance, 'answer_relevance');
+                    // Display duplicate debug info if available
+                    if (data.duplicate_debug) {
+                        let dupDebugHTML = '<table><tr><th>Field</th><th>Value</th></tr>';
+                        for (const [key, val] of Object.entries(data.duplicate_debug)) {
+                            dupDebugHTML += `<tr><td>${key}</td><td>${val}</td></tr>`;
+                        }
+                        dupDebugHTML += '</table>';
+                        document.getElementById('duplicate_debug').innerHTML = dupDebugHTML;
+                    }
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error: ' + error.message);
+            });
+        }
+        
+        function toggleDebug() {
+            const debugSection = document.getElementById('debug-section');
+            debugSection.style.display = (debugSection.style.display === 'none' || debugSection.style.display === '') ? 'block' : 'none';
+        }
+        
+        function buildClassificationTable(classificationText, containerId) {
+            let classificationObj;
+            try {
+                classificationObj = JSON.parse(classificationText);
+            } catch(e) {
+                document.getElementById(containerId).innerText = classificationText;
+                return;
+            }
+            if (!classificationObj) {
+                document.getElementById(containerId).innerText = 'No classification data.';
+                return;
+            }
+            let html = '<table><tr><th>Field</th><th>Value</th></tr>';
+            for (const [key, val] of Object.entries(classificationObj)) {
+                html += `<tr><td>${key}</td><td>${val}</td></tr>`;
+            }
+            html += '</table>';
+            document.getElementById(containerId).innerHTML = html;
+        }
+        
+        function buildSimilarTicketsTable(tickets, containerId) {
+            if (!tickets || tickets.length === 0) {
+                document.getElementById(containerId).innerHTML = 'No similar tickets found.';
+                return;
+            }
+            let html = '<table><tr><th>Incident Type</th><th>Category1</th><th>Category2</th><th>Category3</th><th>Priority</th><th>Similarity</th><th>Cross-Encoder</th><th>Combined Score</th></tr>';
+            tickets.forEach(ticket => {
+                html += `<tr>
+                    <td>${ticket.Incident_Type}</td>
+                    <td>${ticket.Category1}</td>
+                    <td>${ticket.Category2}</td>
+                    <td>${ticket.Category3}</td>
+                    <td>${ticket.Priority}</td>
+                    <td>${ticket.Similarity_Score}</td>
+                    <td>${ticket.Cross_Encoder_Score}</td>
+                    <td>${ticket.Combined_Score}</td>
+                </tr>`;
+            });
+            html += '</table>';
+            document.getElementById(containerId).innerHTML = html;
+        }
+        
+        function buildContextRelevanceTable(contextData, containerId) {
+            if (!contextData) {
+                document.getElementById(containerId).innerHTML = 'No context relevance data.';
+                return;
+            }
+            let html = '<table><tr><th>Metric</th><th>Value</th><th>Visualization</th></tr>';
+            for (const [key, val] of Object.entries(contextData)) {
+                if (typeof val === 'number') {
+                    const pct = Math.round(val * 100);
+                    html += `<tr><td>${key}</td><td>${val}</td><td><div class="progress-bar"><div class="progress" style="width:${pct}%">${pct}%</div></div></td></tr>`;
+                } else {
+                    html += `<tr><td>${key}</td><td colspan="2">${val}</td></tr>`;
+                }
+            }
+            html += '</table>';
+            document.getElementById(containerId).innerHTML = html;
+        }
+        
+        function buildAnswerRelevanceTable(answerData, containerId) {
+            if (!answerData) {
+                document.getElementById(containerId).innerHTML = 'No answer relevance data.';
+                return;
+            }
+            let html = '<table><tr><th>Metric</th><th>Value</th><th>Visualization</th></tr>';
+            for (const [key, val] of Object.entries(answerData)) {
+                if (typeof val === 'number') {
+                    const pct = Math.round(val * 100);
+                    html += `<tr><td>${key}</td><td>${val}</td><td><div class="progress-bar"><div class="progress" style="width:${pct}%">${pct}%</div></div></td></tr>`;
+                } else {
+                    html += `<tr><td>${key}</td><td colspan="2">${val}</td></tr>`;
+                }
+            }
+            html += '</table>';
+            document.getElementById(containerId).innerHTML = html;
+        }
+    </script>
+</body>
+</html>
