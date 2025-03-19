@@ -171,7 +171,7 @@
     <!-- Screen 2: AMS (Classification) -->
     <div id="screen2">
         <h2>AMS Ticket Screen</h2>
-        <!-- Pre-filled fields from Screen 1 (NOT read-only) -->
+        <!-- Pre-filled fields from Screen 1 -->
         <div class="form-group">
             <label for="summary2">Summary:</label>
             <input type="text" id="summary2" name="summary2">
@@ -194,58 +194,64 @@
         </div>
         
         <!-- Button to classify the ticket -->
-        <button onclick="classifyTicket()">Classify Ticket</button>
+        <button id="classifyBtn" onclick="classifyTicket()">Classify Ticket</button>
         
-        <!-- Results Section: Classification, Duplicate, Assignment -->
+        <!-- Results Section: Shown only after classification -->
         <div id="resultsSection">
-            <h3>Classification</h3>
-            <div class="form-group">
+            <!-- Classification Fields (No heading as requested) -->
+            <div class="form-group" id="incidentTypeGroup" style="display:none;">
                 <label for="incidentType">Incident Type:</label>
                 <input type="text" id="incidentType">
             </div>
-            <div class="form-group">
+            <div class="form-group" id="category1Group" style="display:none;">
                 <label for="category1">Category1:</label>
                 <input type="text" id="category1">
             </div>
-            <div class="form-group">
+            <div class="form-group" id="category2Group" style="display:none;">
                 <label for="category2">Category2:</label>
                 <input type="text" id="category2">
             </div>
-            <div class="form-group">
+            <div class="form-group" id="category3Group" style="display:none;">
                 <label for="category3">Category3:</label>
                 <input type="text" id="category3">
             </div>
-            <div class="form-group">
+            <div class="form-group" id="urgencyFieldGroup" style="display:none;">
                 <label for="urgencyField">Urgency:</label>
                 <input type="text" id="urgencyField">
             </div>
             
-            <h3>Duplicate Information</h3>
-            <div class="form-group">
-                <label for="isDuplicate">Is Duplicate:</label>
-                <input type="text" id="isDuplicate">
-            </div>
-            <div class="form-group">
-                <label for="duplicateCategory">Duplicate Category:</label>
-                <input type="text" id="duplicateCategory">
-            </div>
-            <div class="form-group">
-                <label for="originalTicketId">Original Ticket ID:</label>
-                <input type="text" id="originalTicketId">
-            </div>
-            <div class="form-group">
-                <label for="similarityScore">Similarity Score:</label>
-                <input type="text" id="similarityScore">
-            </div>
-            <div class="form-group">
-                <label for="duplicateReasoning">Reasoning:</label>
-                <textarea id="duplicateReasoning" rows="4"></textarea>
+            <!-- Duplicate Info: Shown only if is_duplicate is true -->
+            <div id="duplicateInfoSection" style="display:none; margin-top:20px;">
+                <!-- No heading for "Duplicate Information" -->
+                <div class="form-group">
+                    <label for="isDuplicate">Is Duplicate:</label>
+                    <input type="text" id="isDuplicate">
+                </div>
+                <div class="form-group">
+                    <label for="duplicateCategory">Duplicate Category:</label>
+                    <input type="text" id="duplicateCategory">
+                </div>
+                <div class="form-group">
+                    <label for="originalTicketId">Original Ticket ID:</label>
+                    <input type="text" id="originalTicketId">
+                </div>
+                <div class="form-group">
+                    <label for="similarityScore">Similarity Score:</label>
+                    <input type="text" id="similarityScore">
+                </div>
+                <div class="form-group">
+                    <label for="duplicateReasoning">Reasoning:</label>
+                    <textarea id="duplicateReasoning" rows="4"></textarea>
+                </div>
             </div>
             
-            <h3>Assignment</h3>
-            <div class="form-group">
-                <label for="assignmentGroup">Assignment Group:</label>
-                <input type="text" id="assignmentGroup">
+            <!-- Assignment: Shown only if there's a non-empty assignment group -->
+            <div id="assignmentGroupSection" style="display:none; margin-top:20px;">
+                <!-- No heading for "Assignment" -->
+                <div class="form-group">
+                    <label for="assignmentGroup">Assignment Group:</label>
+                    <input type="text" id="assignmentGroup">
+                </div>
             </div>
         </div>
         
@@ -329,6 +335,9 @@
             const company_code = document.getElementById('company_code2').value.trim();
             const priority = document.getElementById('priority2').value.trim();
             
+            // Hide the "Classify Ticket" button once clicked
+            document.getElementById('classifyBtn').style.display = 'none';
+            
             // Call the backend with step = "final"
             fetch('/process_ticket', {
                 method: 'POST',
@@ -339,6 +348,8 @@
             .then(data => {
                 if (data.error) {
                     alert(data.error);
+                    // If an error occurs, show the classify button again so the user can retry
+                    document.getElementById('classifyBtn').style.display = 'block';
                     return;
                 }
                 alert(data.message || "Classification completed.");
@@ -346,31 +357,44 @@
                 // Show the results section
                 document.getElementById('resultsSection').style.display = 'block';
                 
-                // 1) Parse classification JSON (if present) and fill fields
+                // 1) Classification fields
                 if (data.classification) {
                     try {
                         const classificationObj = JSON.parse(data.classification);
-                        // Example fields (adjust to your classification structure)
-                        document.getElementById('incidentType').value   = classificationObj.Incident_Type || "";
-                        document.getElementById('category1').value      = classificationObj.Category1 || "";
-                        document.getElementById('category2').value      = classificationObj.Category2 || "";
-                        document.getElementById('category3').value      = classificationObj.Category3 || "";
-                        document.getElementById('urgencyField').value   = classificationObj.Urgency || "";
+                        
+                        // If a field is present and non-empty, show it; otherwise hide that group
+                        setFieldValueOrHide("incidentType",       "incidentTypeGroup", classificationObj.Incident_Type);
+                        setFieldValueOrHide("category1",          "category1Group",    classificationObj.Category1);
+                        setFieldValueOrHide("category2",          "category2Group",    classificationObj.Category2);
+                        setFieldValueOrHide("category3",          "category3Group",    classificationObj.Category3);
+                        setFieldValueOrHide("urgencyField",       "urgencyFieldGroup", classificationObj.Urgency);
+                        
                     } catch (e) {
                         console.warn("Could not parse classification JSON. Displaying raw text.");
-                        document.getElementById('incidentType').value = data.classification;
+                        setFieldValueOrHide("incidentType", "incidentTypeGroup", data.classification);
                     }
                 }
-                // 2) Duplicate info
-                if (data.duplicate_debug) {
-                    document.getElementById('isDuplicate').value      = data.duplicate_debug.is_duplicate || "";
-                    document.getElementById('duplicateCategory').value= data.duplicate_debug.duplicate_category || "";
-                    document.getElementById('originalTicketId').value = data.duplicate_debug.original_ticket_id || "";
-                    document.getElementById('similarityScore').value  = data.duplicate_debug.similarity || "";
-                    document.getElementById('duplicateReasoning').value = data.duplicate_debug.reasoning || "";
+                
+                // 2) Duplicate info (only show if is_duplicate is true)
+                if (data.duplicate_debug && data.duplicate_debug.is_duplicate) {
+                    document.getElementById('duplicateInfoSection').style.display = 'block';
+                    document.getElementById('isDuplicate').value       = data.duplicate_debug.is_duplicate || "";
+                    document.getElementById('duplicateCategory').value = data.duplicate_debug.duplicate_category || "";
+                    document.getElementById('originalTicketId').value  = data.duplicate_debug.original_ticket_id || "";
+                    document.getElementById('similarityScore').value   = data.duplicate_debug.similarity || "";
+                    document.getElementById('duplicateReasoning').value= data.duplicate_debug.reasoning || "";
+                } else {
+                    // Hide the entire duplicate section
+                    document.getElementById('duplicateInfoSection').style.display = 'none';
                 }
-                // 3) Assignment Group
-                document.getElementById('assignmentGroup').value = data.assignment_group || "N/A";
+                
+                // 3) Assignment Group (only show if not empty)
+                if (data.assignment_group) {
+                    document.getElementById('assignmentGroupSection').style.display = 'block';
+                    document.getElementById('assignmentGroup').value = data.assignment_group;
+                } else {
+                    document.getElementById('assignmentGroupSection').style.display = 'none';
+                }
                 
                 // Show agent insights & debug sections
                 document.getElementById('agentInsights').style.display = 'block';
@@ -389,8 +413,20 @@
             })
             .catch(error => {
                 console.error('Error:', error);
+                // Show the classify button again if something failed
+                document.getElementById('classifyBtn').style.display = 'block';
                 alert('Error: ' + error.message);
             });
+        }
+        
+        // Helper to set a field's value or hide the entire group if empty
+        function setFieldValueOrHide(fieldId, groupId, value) {
+            if (value && value.trim() !== "") {
+                document.getElementById(fieldId).value = value;
+                document.getElementById(groupId).style.display = 'block';
+            } else {
+                document.getElementById(groupId).style.display = 'none';
+            }
         }
         
         /****************************************
