@@ -1,518 +1,253 @@
-import os
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
+from flask import Flask, request, jsonify, render_template
+import logging
+import traceback
 import json
-import faiss
-from dotenv import load_dotenv
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
-from gen_ai_hub.proxy.core.proxy_clients import get_proxy_client
-from gen_ai_hub.proxy.langchain.init_models import init_llm
-import config
+from config.logger_config import LoggerConfig
+from analysis.anlaysis import *  # <-- Ensure your import paths are correct
+from classification.classifier import TicketClassifier
+from duplicate.duplicate_detector import DuplicateDetector
+from models.ai_models import AIModels
+from models.vector_store import VectorStore
+from models.ticket_retrieval import TicketRetrieval
+from evaluation.evaluator import Evaluator
+from utils.utils import Utils
+from config import config
+from assignement.assignement import TicketAssignment
 
-# Environment setup
-os.environ['AICORE_CLIENT_ID'] = config.AICORE_CLIENT_ID
-os.environ['AICORE_CLIENT_SECRET'] = config.AICORE_CLIENT_SECRET
-os.environ['AICORE_AUTH_URL'] = config.AICORE_AUTH_URL
-os.environ['AICORE_BASE_URL'] = config.AICORE_BASE_URL
-os.environ['AICORE_RESOURCE_GROUP'] = config.AICORE_RESOURCE_GROUP
-load_dotenv()
+# Set up logger
+LoggerConfig.setup_logger()
 
-# Define dataset directory
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATASET_DIR = os.path.join(BASE_DIR, "dataset")
+app = Flask(__name__)
 
-# Update config with paths
-config.BASE_DIR = BASE_DIR
-config.DATASET_DIR = DATASET_DIR
+# Initialize models and vector store
+llm, embeddings = AIModels.initialize_models()
+vectorstore = VectorStore.get_vectorstore(embeddings)
 
-# Initialize AI model
-proxy_client = get_proxy_client("gen-ai-hub")
-llm = init_llm(config.AI_MODEL, proxy_client=proxy_client)
+@app.route('/')
+def index():
+    return render_template('index.html')
 
-# Define prompt templates
-DUPLICATE_CHECK_TEMPLATE = """You are a ticket analysis system. Your task is to determine if a new ticket is a duplicate of any existing tickets.
+@app.route('/process_ticket', methods=['POST'])
+def process_ticket():
+    """
+    Unified flow with two steps:
+      Step "validate": Check if the ticket info (summary, description, company code, component) is sufficient.
+      Step "final": Perform duplicate detection, classification, and assignment.
+    """
+    try:
+        data = request.json
+        if not data:
+            logging.error("No JSON data received in process_ticket")
+            return jsonify({"error": "No JSON data received"}), 400
 
-Historical Tickets:
-{historical_tickets}
+        # Determine step of processing: default is "final" to maintain backward compatibility.
+        step = data.get("step", "final").strip().lower()
 
-New Ticket Details:
-Company Code: {company_code}
-Component: {component}
-Summary: {summary}
-Description: {description}
-
-Instructions:
-1. Focus ONLY on semantic similarity in the problem description
-2. Company code and component matching has already been validated and filtered
-3. A ticket is likely duplicate if it describes the same issue with similar symptoms or errors
-4. Do NOT perform additional validations - focus solely on content similarity analysis
-
-Respond in this EXACT format (replace values appropriately):
-{{"is_duplicate": true/false, "original_ticket_id": "TICKET-123 or null", "confidence": 0.95, "reasoning": "Explanation here"}}
-"""
-
-GLOBAL_OUTAGE_TEMPLATE = """You are a ticket analysis system. Determine if this ticket indicates a global outage.
-
-Historical Global Outages:
-{global_outages}
-
-New Ticket:
-Summary: {summary}
-Description: {description}
-
-Respond in this EXACT format (replace values appropriately):
-{{"is_global_outage": true/false, "confidence": 0.95, "reasoning": "Explanation here"}}"""
-
-def get_embedding(text, embedding_model=config.EMBEDDING_MODEL):
-    """Get embedding vector for text using SAP BTP text-embedding-3 model."""
-    # In a real implementation, this would call the SAP BTP embedding API
-    # For this example, we'll use a placeholder function that returns random embeddings
-    
-    # Normalize the text by removing excessive whitespace and converting to lowercase
-    normalized_text = " ".join(text.lower().split())
-    
-    # This is a placeholder - in production, call the actual embedding API
-    # The dimension should match what SAP BTP text-embedding-3 provides
-    embedding_dim = 1536  # Typical dimension for modern embedding models
-    return np.random.rand(embedding_dim).astype(np.float32)
-
-def save_faiss_index(index, filename="faiss_index"):
-    """Save FAISS index to disk."""
-    save_path = os.path.join(config.INDEX_SAVE_LOCATION, filename)
-    
-    # Create directory if it doesn't exist
-    os.makedirs(config.INDEX_SAVE_LOCATION, exist_ok=True)
-    
-    faiss.write_index(index, save_path)
-    return save_path
-
-def load_faiss_index(filename="faiss_index"):
-    """Load FAISS index from disk."""
-    load_path = os.path.join(config.INDEX_SAVE_LOCATION, filename)
-    
-    if os.path.exists(load_path):
-        return faiss.read_index(load_path)
-    return None
-
-def create_vector_index(data_records):
-    """Create FAISS index from ticket data."""
-    # First check if we have a saved index
-    index = load_faiss_index()
-    if index is not None:
-        # If index exists, we could update it with new records
-        # For simplicity, we'll recreate it in this example
-        pass
-    
-    # Extract text data for embedding
-    texts = []
-    for record in data_records:
-        # Combine summary and description for embedding
-        text = f"{record['summary']} {record['description']}"
-        texts.append(text)
-    
-    # Generate embeddings
-    embeddings = np.array([get_embedding(text) for text in texts]).astype(np.float32)
-    
-    # Create FAISS index based on config
-    embedding_dim = embeddings.shape[1]
-    
-    # Set index type based on config, default to flat index
-    if config.INDEX_TYPE == "IndexFlatL2":
-        index = faiss.IndexFlatL2(embedding_dim)
-    else:
-        # Default to HNSW index
-        index = faiss.IndexHNSWFlat(embedding_dim, 32)  # 32 connections per node
-        index.hnsw.efConstruction = 40  # Higher values give better recall but slower construction
-        index.hnsw.efSearch = 16  # Higher values give better recall but slower search
-    
-    # Add vectors to index
-    if len(embeddings) > 0:
-        index.add(embeddings)
-    
-    # Save the index
-    save_faiss_index(index)
-    
-    return index, embeddings
-
-def search_vector_db(index, query_embedding, k=5):
-    """Search vector database for similar tickets."""
-    # Reshape query embedding to match FAISS expectations
-    query_embedding = query_embedding.reshape(1, -1)
-    
-    # Search the index
-    distances, indices = index.search(query_embedding, k)
-    
-    return distances[0], indices[0]  # Return first result's distances and indices
-
-def format_tickets_for_context(df, max_tickets=None):
-    """Format recent tickets as context for the LLM."""
-    if max_tickets is None:
-        max_tickets = config.MAX_HISTORICAL_TICKETS
+        # Extract required fields
+        summary = data.get("Summary", data.get("summary", "")).strip()
+        description = data.get("Description", data.get("description", "")).strip()
+        component = data.get("Component", data.get("component", "")).strip()
+        company_code = data.get("Company_Code", data.get("company_code", "")).strip()
+        attachments = data.get("Attachments", [])
         
-    # Sort by date if available
-    if 'closure_date' in df.columns:
-        df = df.sort_values('closure_date', ascending=False)
-    
-    recent_tickets = df.head(max_tickets)
-    formatted_tickets = []
-    
-    for _, row in recent_tickets.iterrows():
-        ticket = (
-            f"Ticket ID: {row['ticket_id']}\n"
-            f"Company: {row['company_code']}\n"
-            f"Component: {row['component']}\n"
-            f"Summary: {row['summary']}\n"
-            f"Description: {row['description']}\n"
-            "---"
+        logging.debug(
+            f"Process Ticket - Received: Summary='{summary}', Description='{description}', "
+            f"Company_Code='{company_code}', Component='{component}'"
         )
-        formatted_tickets.append(ticket)
-    
-    return "\n\n".join(formatted_tickets)
 
-def parse_llm_response(response_text, default_response):
-    """Safely parse LLM response and ensure it matches expected format."""
-    try:
-        # Clean up common JSON formatting issues
-        response_text = response_text.strip()
-        if response_text.startswith("```json"):
-            response_text = response_text.replace("```json", "").replace("```", "")
-        
-        # Parse JSON
-        parsed = json.loads(response_text)
-        
-        # Validate required fields
-        if "is_duplicate" not in parsed and "is_global_outage" not in parsed:
-            return default_response
-            
-        return parsed
-    except Exception as e:
-        print(f"Error parsing LLM response: {str(e)}")
-        print(f"Raw response: {response_text}")
-        return default_response
-
-def validate_ticket_data(ticket_data):
-    """Pre-validate ticket data before processing."""
-    # Check for required fields
-    for field in config.PRE_VALIDATION_FIELDS:
-        if not ticket_data.get(field):
-            return False, f"Missing required field: {field}"
-    
-    return True, "Validation successful"
-
-def check_duplicate(master_df, ticket_data):
-    """Check if a ticket is duplicate using direct LLM analysis or Vector DB based on config."""
-    default_response = {
-        "is_duplicate": False,
-        "original_ticket_id": None,
-        "confidence": 0.0,
-        "reasoning": "Unable to perform analysis"
-    }
-    
-    # Pre-validation: Only process tickets with valid company code and component
-    is_valid, validation_message = validate_ticket_data(ticket_data)
-    if not is_valid:
-        return {
-            "is_duplicate": False,
-            "original_ticket_id": None,
-            "confidence": 0.0,
-            "reasoning": validation_message
-        }
-    
-    try:
-        # First try Vector DB approach if enabled
-        if config.ENABLE_VECTOR_DB_DUPLICATE_DETECTION:
-            # Pre-filter based on company code and component before searching
-            relevant_df = master_df[
-                (master_df['company_code'] == ticket_data['company_code']) &
-                (master_df['component'] == ticket_data['component'])
-            ].copy()
-            
-            # Skip to LLM if no relevant tickets found in Vector DB
-            if not relevant_df.empty:
-                # Create vector index for relevant tickets
-                relevant_records = relevant_df.to_dict(orient="records")
-                vector_index, embeddings = create_vector_index(relevant_records)
-                
-                # Generate embedding for new ticket
-                query_text = f"{ticket_data['summary']} {ticket_data['description']}"
-                query_embedding = get_embedding(query_text)
-                
-                # Search for similar tickets
-                distances, indices = search_vector_db(vector_index, query_embedding, k=5)
-                
-                # Convert distances to cosine similarity scores
-                # For L2 distances, convert to similarity (1 - normalized_distance)
-                max_distance = np.max(distances) if distances.size > 0 else 1.0
-                similarities = [1 - (dist/max_distance) for dist in distances]
-                
-                # Find the best match
-                best_idx = 0  # Default to first result
-                best_similarity = similarities[0] if similarities else 0
-                
-                for i, similarity in enumerate(similarities):
-                    if similarity > best_similarity:
-                        best_similarity = similarity
-                        best_idx = i
-                
-                # Get the matching ticket details if there are results
-                if indices.size > 0 and best_idx < len(indices):
-                    matching_ticket = relevant_df.iloc[indices[best_idx]]
-                    
-                    # Determine duplicate status based on thresholds
-                    if best_similarity >= config.DUPLICATE_THRESHOLDS['definite_duplicate']:
-                        return {
-                            "is_duplicate": True,
-                            "original_ticket_id": matching_ticket['ticket_id'],
-                            "confidence": best_similarity,
-                            "reasoning": f"Vector similarity score: {best_similarity:.4f} - Definite duplicate"
-                        }
-                    elif best_similarity >= config.DUPLICATE_THRESHOLDS['likely_duplicate']:
-                        return {
-                            "is_duplicate": True,
-                            "original_ticket_id": matching_ticket['ticket_id'],
-                            "confidence": best_similarity,
-                            "reasoning": f"Vector similarity score: {best_similarity:.4f} - Likely duplicate"
-                        }
-        
-        # Fall back to LLM approach if Vector DB not enabled or didn't find a match
-        if config.ENABLE_LLM_DUPLICATE_DETECTION:
-            # Pre-filter for LLM to reduce complexity
-            relevant_df = master_df[
-                (master_df['company_code'] == ticket_data['company_code']) &
-                (master_df['component'] == ticket_data['component'])
-            ].copy()
-            
-            # Only use LLM if we have relevant tickets
-            if relevant_df.empty:
-                return {
-                    "is_duplicate": False,
-                    "original_ticket_id": None,
-                    "confidence": 0.0,
-                    "reasoning": "No matching company code and component found"
-                }
-                
-            historical_context = format_tickets_for_context(relevant_df)
-            
-            # Prepare and execute the chain
-            prompt = ChatPromptTemplate.from_template(DUPLICATE_CHECK_TEMPLATE)
-            chain = prompt | llm | StrOutputParser()
-            
-            # Implement retry logic
-            retries = 0
-            while retries < config.MAX_LLM_RETRIES:
-                try:
-                    response = chain.invoke({
-                        "historical_tickets": historical_context,
-                        "company_code": str(ticket_data["company_code"]),
-                        "component": str(ticket_data["component"]),
-                        "summary": str(ticket_data["summary"]),
-                        "description": str(ticket_data["description"])
-                    })
-                    
-                    result = parse_llm_response(response, default_response)
-                    if result != default_response:
-                        return result
-                    
-                    retries += 1
-                except Exception as e:
-                    print(f"LLM retry {retries+1}/{config.MAX_LLM_RETRIES} failed: {str(e)}")
-                    retries += 1
-            
-            # If we get here, all retries failed
-            return default_response
-        
-        # If neither Vector DB nor LLM analysis is enabled
-        return default_response
-        
-    except Exception as e:
-        print(f"Error in check_duplicate: {str(e)}")
-        return default_response
-
-def check_recently_closed_tickets(ticket_data, master_df):
-    """Check if a similar ticket was closed recently (within configured days)."""
-    default_response = {
-        "is_duplicate": False,
-        "original_ticket_id": None,
-        "confidence": 0.0,
-        "reasoning": "No recent similar tickets found"
-    }
-    
-    # Pre-validation
-    is_valid, validation_message = validate_ticket_data(ticket_data)
-    if not is_valid:
-        return default_response
-    
-    try:
-        # Pre-filter by company code and component first
-        cutoff_date = datetime.now() - timedelta(days=config.RECENT_TICKETS_DAYS)
-        recent_df = master_df[
-            (master_df["closure_date"] >= cutoff_date) &
-            (master_df['company_code'] == ticket_data['company_code']) &
-            (master_df['component'] == ticket_data['component'])
-        ].copy()
-        
-        if recent_df.empty:
-            return default_response
-        
-        # Decide which approach to use based on configuration
-        if config.ENABLE_VECTOR_DB_DUPLICATE_DETECTION:
-            # Create vector index for recent tickets
-            recent_records = recent_df.to_dict(orient="records")
-            vector_index, embeddings = create_vector_index(recent_records)
-            
-            # Generate embedding for new ticket
-            query_text = f"{ticket_data['summary']} {ticket_data['description']}"
-            query_embedding = get_embedding(query_text)
-            
-            # Search in vector database
-            distances, indices = search_vector_db(vector_index, query_embedding, k=5)
-            
-            # Convert distances to similarity scores
-            max_distance = np.max(distances) if distances.size > 0 else 1.0
-            similarities = [1 - (dist/max_distance) for dist in distances]
-            
-            # Find the best match
-            if not similarities:
-                return default_response
-                
-            best_idx = 0
-            best_similarity = similarities[0]
-            
-            for i, similarity in enumerate(similarities):
-                if similarity > best_similarity:
-                    best_similarity = similarity
-                    best_idx = i
-            
-            # Determine duplicate status based on thresholds
-            if indices.size > 0 and best_idx < len(indices):
-                if best_similarity >= config.DUPLICATE_THRESHOLDS['definite_duplicate'] or best_similarity >= config.DUPLICATE_THRESHOLDS['likely_duplicate']:
-                    # Get the matching ticket details
-                    matching_ticket = recent_df.iloc[indices[best_idx]]
-                    
-                    return {
-                        "is_duplicate": True,
-                        "original_ticket_id": matching_ticket['ticket_id'],
-                        "confidence": best_similarity,
-                        "reasoning": f"Recently closed ticket with vector similarity: {best_similarity:.4f}"
+        # Step 1: Validate ticket information only
+        if step == "validate":
+            analysis_result = TicketAnalyzer.analyze_ticket_data(
+                summary=summary,
+                description=description,
+                component=component,
+                company_code=company_code,
+                attachments=attachments
+            )
+            if analysis_result["missing_info"]:
+                logging.warning("Ticket has missing/insufficient information.")
+                return jsonify({
+                    "status": analysis_result["status"],
+                    "message": analysis_result["message"],
+                    "missing_fields": analysis_result["missing_fields"]
+                }), 400
+            else:
+                return jsonify({
+                    "message": "Ticket information is sufficient. Proceed to AMS screen.",
+                    "ticket_data": {
+                        "summary": summary,
+                        "description": description,
+                        "component": component,
+                        "company_code": company_code
                     }
-            
-            return default_response
-        
-        elif config.ENABLE_LLM_DUPLICATE_DETECTION:
-            # Use LLM-based approach as fallback
-            historical_context = format_tickets_for_context(recent_df)
-            
-            prompt = ChatPromptTemplate.from_template(DUPLICATE_CHECK_TEMPLATE)
-            chain = prompt | llm | StrOutputParser()
-            
-            # Implement retry logic for LLM
-            retries = 0
-            while retries < config.MAX_LLM_RETRIES:
-                try:
-                    response = chain.invoke({
-                        "historical_tickets": historical_context,
-                        "company_code": str(ticket_data["company_code"]),
-                        "component": str(ticket_data["component"]),
-                        "summary": str(ticket_data["summary"]),
-                        "description": str(ticket_data["description"])
-                    })
-                    
-                    result = parse_llm_response(response, default_response)
-                    if result != default_response:
-                        return result
-                    
-                    retries += 1
-                except Exception as e:
-                    print(f"LLM retry {retries+1}/{config.MAX_LLM_RETRIES} failed: {str(e)}")
-                    retries += 1
-            
-            return default_response
-        
-        else:
-            return default_response
-            
-    except Exception as e:
-        print(f"Error in check_recently_closed_tickets: {str(e)}")
-        return default_response
-
-def is_global_outage(ticket_data, master_df):
-    """Check if ticket matches an ongoing global outage issue."""
-    if not config.ENABLE_GLOBAL_OUTAGE_DETECTION:
-        return False
-        
-    try:
-        global_outages = master_df[master_df["status"] == "global_outage"].copy()
-        
-        if global_outages.empty:
-            return False
-        
-        global_outages_context = format_tickets_for_context(global_outages)
-        
-        prompt = ChatPromptTemplate.from_template(GLOBAL_OUTAGE_TEMPLATE)
-        chain = prompt | llm | StrOutputParser()
-        
-        # Implement retry logic
-        retries = 0
-        while retries < config.MAX_LLM_RETRIES:
-            try:
-                response = chain.invoke({
-                    "global_outages": global_outages_context,
-                    "summary": str(ticket_data["summary"]),
-                    "description": str(ticket_data["description"])
                 })
-                
-                result = parse_llm_response(response, {"is_global_outage": False})
-                return result.get("is_global_outage", False)
-                
-            except Exception as e:
-                print(f"LLM retry {retries+1}/{config.MAX_LLM_RETRIES} failed: {str(e)}")
-                retries += 1
+
+        # Step 2 (or legacy flow): Process the full ticket (duplicate detection, classification, assignment)
+        # Extract additional AMS fields if provided
+        urgency = data.get("urgency", "").strip()
+        labels = data.get("labels", "").strip()
+        jira_ticket_option = data.get("jira_ticket_option", "").strip()
+
+        # 1) Check for Missing Information
+        analysis_result = TicketAnalyzer.analyze_ticket_data(
+            summary=summary,
+            description=description,
+            component=component,
+            company_code=company_code,
+            attachments=attachments
+        )
+        if analysis_result["missing_info"]:
+            logging.warning("Ticket has missing/insufficient information.")
+            return jsonify({
+                "status": analysis_result["status"],
+                "message": analysis_result["message"],
+                "missing_fields": analysis_result["missing_fields"]
+            }), 400
+
+        # 2) Duplicate Detection
+        duplicate_result = DuplicateDetector.check_duplicate_ticket({
+            "Summary": summary,
+            "Description": description,
+            "Company_Code": company_code,
+            "Component": component
+        }, vectorstore, embeddings)
+        is_duplicate = duplicate_result.get("is_duplicate", False)
+        duplicate_category = duplicate_result.get("duplicate_category", "No duplicate found")
+        original_ticket_id = duplicate_result.get("original_ticket_id", None)
+        similarity = duplicate_result.get("similarity", 0.0)
+        reasoning = duplicate_result.get("reasoning", "")
+        duplicate_debug = {
+            "is_duplicate": is_duplicate,
+            "duplicate_category": duplicate_category,
+            "original_ticket_id": original_ticket_id,
+            "similarity": similarity,
+            "reasoning": reasoning
+        }
+
+        # 3) Classification (Always)
+        retrieved_tickets = TicketRetrieval.retrieve_and_rerank_tickets(
+            vectorstore, summary, description, k=5
+        )
+        classification = TicketClassifier.generate_response_with_prompt(
+            llm, retrieved_tickets, summary, description
+        )
+        const_query = Utils.normalize_text(f"{summary} {description}")
+        context_relevance = Evaluator.evaluate_context_relevance(const_query, retrieved_tickets, embeddings)
+        answer_relevance = Evaluator.evaluate_answer_relevance(const_query, classification, retrieved_tickets, embeddings)
+
+        # 4) Confidence Threshold Logic
+        confidence_message = ""
+        if retrieved_tickets:
+            best_ticket = retrieved_tickets[0]
+            best_score = best_ticket.get("Combined_Score", 0.0)
+            if best_score >= config.CLASSIFICATION_HIGH_CONF_THRESHOLD:
+                confidence_message = "High confidence classification. Set JIRA ticket status to 'Classified' automatically."
+            elif best_score >= config.CLASSIFICATION_MODERATE_CONF_THRESHOLD:
+                confidence_message = "Moderate confidence classification. Set JIRA ticket status to 'Human_Evaluation_Required'."
+            else:
+                confidence_message = "Low confidence classification. Set JIRA ticket status to 'Manual_Classification_Required'."
+        else:
+            best_score = 0.0
+            confidence_message = "No similar tickets found; cannot compute classification confidence."
+
+        # 5) Perform Assignment using Incident_Type from classification JSON
+        incident_type = "others"
+        try:
+            parsed = json.loads(classification)
+            incident_type = parsed.get("Incident_Type", "others").strip().lower()
+        except Exception as e:
+            logging.warning(f"Could not parse classification JSON. Defaulting to 'others'. Error: {str(e)}")
+
+        # Here, we assume that the division is provided by the classification or user.
+        # For this example, we assume the division is the same as the incident_type.
+        # Additional AMS fields (urgency, labels, jira_ticket_option) could be integrated into ticket_info if needed.
+        ticket_info = {
+            "ticket_type": incident_type,
+            "summary": summary,
+            "description": description,
+            "division": incident_type,
+            "urgency": urgency,
+            "labels": labels,
+            "jira_ticket_option": jira_ticket_option
+        }
+        assignment_group = TicketAssignment.assign_ticket(ticket_info, TicketAssignment.load_agents())
+
+        # 6) Final Response
+        final_response = {
+            "message": "",
+            "duplicate_debug": duplicate_debug,
+            "classification": classification,
+            "confidence_message": confidence_message,
+            "similar_tickets": retrieved_tickets,
+            "context_relevance": context_relevance,
+            "answer_relevance": answer_relevance,
+            "assignment_group": assignment_group
+        }
+        if is_duplicate:
+            final_response["message"] = (
+                "Ticket identified as DUPLICATE.\n"
+                "Classification completed.\n"
+            )
+        else:
+            final_response["message"] = "No duplicate found. Classification completed."
         
-        return False
-        
+        logging.info(final_response["message"])
+        return jsonify(final_response)
+
     except Exception as e:
-        print(f"Error in is_global_outage: {str(e)}")
-        return False
+        logging.error(f"Error in process_ticket: {str(e)}")
+        logging.error(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
 
-def load_master_data():
-    """Load master ticket data."""
-    file_path = os.path.join(DATASET_DIR, "master_data.csv")
-    df = pd.read_csv(file_path)
-    df.rename(columns={
-        "Incident Key": "ticket_id",
-        "Summary": "summary",
-        "Custom Field (Company)": "company_code",
-        "Custom Field (Component)": "component",
-        "Incident Type": "incident_type",
-        "Description": "description",
-        "Status": "status",
-        "Resolved_Parsed": "closure_date"
-    }, inplace=True)
-    df["closure_date"] = pd.to_datetime(df["closure_date"], errors="coerce")
-    return df
+# Additional Endpoint: Chart Data / Insights from Agent CSV
+@app.route('/chart_data')
+def chart_data():
+    try:
+        agents = TicketAssignment.load_agents()
+        stats = {}
+        for a in agents:
+            div = a["division"]
+            if div not in stats:
+                stats[div] = {
+                    "total_agents": 0,
+                    "avg_workload": 0.0,
+                    "agents_on_leave": 0,
+                    "agents_online": 0,
+                    "agents_available": 0
+                }
+        for a in agents:
+            div = a["division"]
+            stats[div]["total_agents"] += 1
+            stats[div]["avg_workload"] += a["current_load"]
+            if a["leave_flag"]:
+                stats[div]["agents_on_leave"] += 1
+            if a["Availability"] and TicketAssignment.is_within_working_hours(a):
+                stats[div]["agents_online"] += 1
+                if not a["leave_flag"]:
+                    stats[div]["agents_available"] += 1
+        for div in stats:
+            total = stats[div]["total_agents"]
+            stats[div]["avg_workload"] = round(stats[div]["avg_workload"] / total, 2) if total > 0 else 0.0
+        return jsonify(stats)
+    except Exception as e:
+        logging.error(f"Error in chart_data: {str(e)}")
+        logging.error(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
 
-def load_new_ticket_data():
-    """Load new ticket data."""
-    file_path = os.path.join(DATASET_DIR, "new_ticket_updated.csv")
-    df = pd.read_csv(file_path)
-    df.rename(columns={
-        "Incident Key": "ticket_id",
-        "Summary": "summary",
-        "Custom Field (Company)": "company_code",
-        "Custom Field (Component)": "component",
-        "Incident Type": "incident_type",
-        "Description": "description",
-    }, inplace=True)
-    return df.to_dict(orient="records")
+# Additional Endpoint: Detailed Agent Data
+@app.route('/agents_data')
+def agents_data():
+    try:
+        agents = TicketAssignment.load_agents()
+        return jsonify(agents)
+    except Exception as e:
+        logging.error(f"Error in agents_data: {str(e)}")
+        logging.error(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
 
-def create_subtask(original_ticket_id, duplicate_data):
-    """Create a subtask for a duplicate ticket."""
-    return {
-        "parent_ticket_id": original_ticket_id,
-        "summary": f"Duplicate of {original_ticket_id}",
-        "description": f"Original description: {duplicate_data['description']}",
-        "status": "Created from duplicate",
-        "created_date": datetime.now().isoformat()
-    }
+if __name__ == '__main__':
+    try:
+        app.run(debug=True, host='0.0.0.0', port=5000)
+    except Exception as e:
+        logging.error(f"Error starting application: {e}")
+        logging.error(traceback.format_exc())
