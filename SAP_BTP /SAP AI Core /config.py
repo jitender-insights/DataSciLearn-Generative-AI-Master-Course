@@ -149,7 +149,7 @@
     <button onclick="validateTicket()">Create Ticket</button>
   </div>
   
-  <!-- Loader Modal (after successful validation) -->
+  <!-- Loader Modal -->
   <div id="loaderModal" class="modal">
     <div class="modal-content">
       <div class="loader"></div>
@@ -205,7 +205,7 @@
         <input type="text" id="urgencyField">
       </div>
       
-      <!-- Duplicate Info: Only shown if ticket is detected as duplicate -->
+      <!-- Duplicate Info: Only shown if duplicate is detected -->
       <div id="duplicateInfoSection" style="display:none; margin-top:20px;">
         <div class="form-group">
           <label for="isDuplicate">Is Duplicate:</label>
@@ -340,10 +340,11 @@
         if (data.classification) {
           try {
             const classificationObj = JSON.parse(data.classification);
+            // Use keys as returned by your classifier (with underscores)
             setFieldValueOrHide("incidentType", "incidentTypeGroup", classificationObj.Incident_Type);
-            setFieldValueOrHide("category1", "category1Group", classificationObj.Category1);
-            setFieldValueOrHide("category2", "category2Group", classificationObj.Category2);
-            setFieldValueOrHide("category3", "category3Group", classificationObj.Category3);
+            setFieldValueOrHide("category1", "category1Group", classificationObj.Category_1);
+            setFieldValueOrHide("category2", "category2Group", classificationObj.Category_2);
+            setFieldValueOrHide("category3", "category3Group", classificationObj.Category_3);
             setFieldValueOrHide("urgencyField", "urgencyFieldGroup", classificationObj.Urgency);
           } catch (e) {
             console.warn("Could not parse classification JSON.");
