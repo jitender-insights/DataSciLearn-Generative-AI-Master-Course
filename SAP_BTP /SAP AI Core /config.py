@@ -80,7 +80,7 @@
       0% { transform: rotate(0deg); }
       100% { transform: rotate(360deg); }
     }
-    /* Screen 2 (AMS View) – remains hidden in the original window */
+    /* Screen 2: AMS (Classification) Full-Screen with Scroll */
     #screen2 {
       display: none;
       position: fixed;
@@ -91,7 +91,7 @@
       height: 100%;
       margin: 0;
       padding: 20px;
-      background-color: #f8f9fa;
+      background-color: #f8f9fa; /* match Screen 1 color */
       overflow-y: auto;
     }
     /* Table & progress bar styles for debug info */
@@ -147,6 +147,7 @@
   <!-- Screen 1: Ticket Creation -->
   <div id="screen1">
     <h1 id="screen1Header">User ticket creation view</h1>
+    
     <div class="form-group">
       <label for="summary">Summary:</label>
       <input type="text" id="summary" name="summary" placeholder="Enter a brief summary">
@@ -178,7 +179,7 @@
     </div>
     <button onclick="validateTicket()">Create Ticket</button>
   </div>
-
+  
   <!-- Loader Modal -->
   <div id="loaderModal" class="modal">
     <div class="modal-content">
@@ -186,16 +187,18 @@
       <p>Information sufficient for further processing, creating ticket....</p>
     </div>
   </div>
-
+  
   <!-- Screen 2: AMS (Classification) Full-Screen with Scroll -->
-  <!-- This markup remains hidden in the original window and will be injected into the new tab -->
+  <!-- This markup remains in the original file (hidden) and will be injected into the new tab -->
   <div id="screen2">
     <h2 style="text-align:center;">AMS view: Ticket classification and duplicate detection</h2>
+    
     <!-- Ticket ID Field (auto-generated) -->
     <div class="form-group">
       <label for="ticketID">Ticket ID:</label>
       <input type="text" id="ticketID" name="ticketID" readonly>
     </div>
+    
     <!-- Fields from Screen 1 (pre-filled) + Classify Ticket Button -->
     <div class="form-group">
       <label for="summary2">Summary:</label>
@@ -205,21 +208,25 @@
       <label for="description2">Description:</label>
       <textarea id="description2" name="description2" rows="10"></textarea>
     </div>
+    
     <!-- Attachments (placeholder) -->
     <div class="form-group">
       <label for="attachments2">Attachments:</label>
       <input type="file" id="attachments2" name="attachments2" multiple>
     </div>
+    
     <!-- Status (always open) -->
     <div class="form-group">
       <label for="statusField">Status:</label>
       <input type="text" id="statusField" readonly>
     </div>
+    
     <!-- User Priority (passed from Screen 1) -->
     <div class="form-group">
       <label for="priority2">User Priority:</label>
       <input type="text" id="priority2" readonly>
     </div>
+    
     <div class="form-group">
       <label for="component2">Component:</label>
       <input type="text" id="component2" name="component2">
@@ -228,7 +235,9 @@
       <label for="company_code2">Company:</label>
       <input type="text" id="company_code2" name="company_code2">
     </div>
+    
     <button id="classifyBtn" onclick="classifyTicket()">Classify Ticket</button>
+    
     <!-- Classification Results (hidden until classification is done) -->
     <div id="classificationResults" style="display:none; margin-top:20px;">
       <!-- Classification Fields -->
@@ -257,6 +266,7 @@
         <label for="impactField">Impact:</label>
         <input type="text" id="impactField" readonly>
       </div>
+      
       <!-- Duplicate Info -->
       <div id="duplicateInfoSection" style="display:none; margin-top:20px;">
         <div class="form-group">
@@ -268,6 +278,7 @@
           <input type="text" id="similarityScore">
         </div>
       </div>
+      
       <!-- Assignment Group -->
       <div id="assignmentGroupSection" style="display:none; margin-top:20px;">
         <div class="form-group">
@@ -276,6 +287,7 @@
         </div>
       </div>
     </div>
+    
     <!-- Debug Section: Collapsible -->
     <button class="toggle-btn" style="display:none;" id="debugToggle" onclick="toggleDebug()">Show Debug Info</button>
     <div class="toggle-content" id="debugSection">
@@ -286,15 +298,17 @@
       <h3>Answer Relevance</h3>
       <div id="answer_relevance"></div>
     </div>
+    
     <!-- Assignment Insights: Collapsible -->
     <button class="toggle-btn" style="display:none;" id="assignmentInsightsToggle" onclick="toggleAssignmentInsights()">Show Assignment Insights</button>
     <div class="toggle-content" id="assignmentInsights">
       <div id="insights_data"></div>
     </div>
+    
     <!-- Back Button -->
     <button style="background-color:#6c757d; width:auto; margin-top:20px;" onclick="goBack()">Back</button>
   </div>
-
+  
   <script>
     // Generate a random unique ticket id with prefix "REQ-"
     function generateTicketID() {
@@ -354,9 +368,10 @@
           document.getElementById('component2').value = component;
           document.getElementById('company_code2').value = company_code;
           
-          // Open Screen 2 in a new tab (all existing functionality will be available there)
+          // Open a new tab with Screen 2 content
           const newTab = window.open("", "_blank");
           const screen2Content = document.getElementById('screen2').outerHTML;
+          
           newTab.document.open();
           newTab.document.write(`
             <!DOCTYPE html>
@@ -495,7 +510,7 @@
             <body>
               ${screen2Content}
               <script>
-                // Pre-populate Screen 2 fields (they were set in the original window)
+                // Pre-populate Screen 2 fields using Screen 1 data
                 document.getElementById('statusField').value = "open";
                 document.getElementById('ticketID').value = "${generateTicketID()}";
                 document.getElementById('priority2').value = "${priority}";
@@ -702,7 +717,7 @@
                   window.close();
                 }
                 
-                // Bind functions to the buttons in the new tab
+                // Bind functions in the new tab
                 document.getElementById('classifyBtn').onclick = classifyTicket;
                 document.querySelector('button[onclick="goBack()"]').onclick = goBack;
               <\/script>
@@ -722,7 +737,7 @@
      * SCREEN 2: Classify Ticket & Display  *
      ****************************************/
     function classifyTicket() {
-      // This fallback function in the original window won't be used when new tab is open.
+      // This fallback in the original window is not used when the new tab is open.
       alert("Classification is handled in the new tab.");
     }
     
@@ -760,7 +775,7 @@
       document.getElementById('impactField').value = "";
     }
     
-    // Back button in the original window (for fallback)
+    // Back button in the original window (fallback)
     function goBack() {
       document.getElementById('screen2').style.display = 'none';
       document.getElementById('screen1').style.display = 'block';
