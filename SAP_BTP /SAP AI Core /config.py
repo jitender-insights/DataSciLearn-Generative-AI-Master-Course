@@ -123,10 +123,21 @@
       line-height: 20px;
       color: white;
     }
+    /* Back button style */
+    #backBtn {
+      background-color: #6c757d;
+      margin-bottom: 20px;
+    }
+    /* Assignment Insights renamed */
+    #assignmentInsightsBtn {
+      background-color: #007bff;
+      margin-top: 20px;
+    }
   </style>
 </head>
 <body>
-  <h1>JIRA Ticket Classification & Duplicate Detection</h1>
+  <!-- Screen 1 Header -->
+  <h1>User ticket creation view</h1>
   
   <!-- Screen 1: Ticket Creation -->
   <div id="screen1">
@@ -143,8 +154,17 @@
       <input type="text" id="component" name="component">
     </div>
     <div class="form-group">
-      <label for="company_code">Company Code:</label>
+      <label for="company_code">Company:</label>
       <input type="text" id="company_code" name="company_code">
+    </div>
+    <div class="form-group">
+      <label for="user_priority">Priority:</label>
+      <select id="user_priority" name="user_priority">
+        <option value="">--Select Priority--</option>
+        <option value="high">High</option>
+        <option value="medium">Medium</option>
+        <option value="low">Low</option>
+      </select>
     </div>
     <button onclick="validateTicket()">Create Ticket</button>
   </div>
@@ -157,9 +177,14 @@
     </div>
   </div>
   
-  <!-- Screen 2: AMS (Classification) -->
+  <!-- Screen 2 Header -->
+  <h2 id="screen2Header" style="display:none;">AMS view: Ticket classification and duplicate detection</h2>
+  
+  <!-- Screen 2: AMS View -->
   <div id="screen2">
-    <h2>AMS Ticket Screen</h2>
+    <!-- Back Button to return to Screen 1 -->
+    <button id="backBtn" onclick="goBack()">Back</button>
+    
     <!-- Pre-filled fields (editable) -->
     <div class="form-group">
       <label for="summary2">Summary:</label>
@@ -174,14 +199,14 @@
       <input type="text" id="component2" name="component2">
     </div>
     <div class="form-group">
-      <label for="company_code2">Company Code:</label>
+      <label for="company_code2">Company:</label>
       <input type="text" id="company_code2" name="company_code2">
     </div>
     
-    <!-- Button to trigger classification (hidden after click) -->
+    <!-- Button to trigger classification -->
     <button id="classifyBtn" onclick="classifyTicket()">Classify Ticket</button>
     
-    <!-- Results Section (populated after classification) -->
+    <!-- Results Section -->
     <div id="resultsSection">
       <!-- Classification Fields -->
       <div class="form-group" id="incidentTypeGroup" style="display:none;">
@@ -205,7 +230,7 @@
         <input type="text" id="urgencyField">
       </div>
       
-      <!-- Duplicate Info: Only shown if duplicate is detected -->
+      <!-- Duplicate Info (only if duplicate is detected) -->
       <div id="duplicateInfoSection" style="display:none; margin-top:20px;">
         <div class="form-group">
           <label for="isDuplicate">Is Duplicate:</label>
@@ -229,20 +254,13 @@
         </div>
       </div>
       
-      <!-- Assignment Group: Only shown if available -->
+      <!-- Assignment Group (only if available) -->
       <div id="assignmentGroupSection" style="display:none; margin-top:20px;">
         <div class="form-group">
           <label for="assignmentGroup">Assignment Group:</label>
           <input type="text" id="assignmentGroup">
         </div>
       </div>
-    </div>
-    
-    <!-- Agent Insights (shown only after classification) -->
-    <div id="agentInsights">
-      <h2>Agent Insights</h2>
-      <button onclick="fetchInsights()">Refresh Insights</button>
-      <div id="insights_data"></div>
     </div>
     
     <!-- Debug Info Section (shown only after classification) -->
@@ -257,9 +275,22 @@
         <div id="answer_relevance"></div>
       </div>
     </div>
+    
+    <!-- Assignment Insights (renamed Refresh Insights) placed after Debug Info -->
+    <button id="assignmentInsightsBtn" onclick="fetchInsights()">Assignment Insights</button>
+    <div id="insights_data"></div>
   </div>
   
   <script>
+    // Function to return to Screen 1 (User Ticket Creation)
+    function goBack() {
+      // Optionally, clear Screen 2 fields if needed
+      document.getElementById('screen2').style.display = 'none';
+      document.getElementById('screen1').style.display = 'block';
+      // Also, reset header visibility
+      document.getElementById('screen2Header').style.display = 'none';
+    }
+    
     /****************************************
      *  SCREEN 1: Validate & Create Ticket  *
      ****************************************/
@@ -268,13 +299,12 @@
       const description = document.getElementById('description').value.trim();
       const component = document.getElementById('component').value.trim();
       const company_code = document.getElementById('company_code').value.trim();
-      
+      // User Priority is for UI only; we don't send it to backend.
       if (!summary || !description || !component || !company_code) {
-        alert('Summary, Description, Company Code, and Component are mandatory.');
+        alert('Summary, Description, Company, and Component are mandatory.');
         return;
       }
-      
-      // Send only the required fields for validation
+      // Send only required fields for validation
       fetch('/process_ticket', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -292,6 +322,8 @@
           document.getElementById('loaderModal').style.display = 'none';
           document.getElementById('screen1').style.display = 'none';
           document.getElementById('screen2').style.display = 'block';
+          // Show the AMS view header
+          document.getElementById('screen2Header').style.display = 'block';
           // Pre-fill Screen 2 fields with values from Screen 1
           document.getElementById('summary2').value = summary;
           document.getElementById('description2').value = description;
@@ -313,7 +345,7 @@
       const description = document.getElementById('description2').value.trim();
       const component = document.getElementById('component2').value.trim();
       const company_code = document.getElementById('company_code2').value.trim();
-      // Note: We do NOT send any priority field in this final step.
+      // We do NOT send any priority field in the final step.
       
       // Hide the classify button once clicked
       document.getElementById('classifyBtn').style.display = 'none';
