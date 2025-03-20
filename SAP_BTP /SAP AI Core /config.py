@@ -2,6 +2,7 @@
 <html>
 <head>
   <title>JIRA Ticket Classification & Duplicate Detection</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -14,6 +15,11 @@
       text-align: center;
       color: #333;
     }
+    /* Screen 1 Header */
+    #screen1Header {
+      text-align: center;
+      color: #333;
+    }
     .form-group {
       margin-bottom: 15px;
     }
@@ -21,6 +27,7 @@
       font-weight: bold;
     }
     input[type="text"],
+    input[type="file"],
     textarea,
     select {
       width: 100%;
@@ -73,24 +80,12 @@
       0% { transform: rotate(0deg); }
       100% { transform: rotate(360deg); }
     }
-    /* Screen display */
+    /* Screen 2: AMS (Classification) Full-Screen with Scroll */
     #screen2 {
       display: none;
-    }
-    /* Initially hide results, agent insights, and debug until classification is done */
-    #resultsSection, #agentInsights, #debugSection {
-      display: none;
-      margin-top: 20px;
-    }
-    .debug-toggle {
-      background-color: #28a745;
-      color: white;
-      padding: 10px;
-      border: none;
-      border-radius: 5px;
-      cursor: pointer;
-      width: 100%;
-      margin-top: 10px;
+      padding: 20px;
+      background-color: #f8f9fa;
+      overflow-y: auto;
     }
     /* Table & progress bar styles for debug info */
     table {
@@ -123,24 +118,29 @@
       line-height: 20px;
       color: white;
     }
-    /* Back button style */
-    #backBtn {
+    /* Collapsible toggles for debug & assignment insights */
+    .toggle-btn {
       background-color: #6c757d;
-      margin-bottom: 20px;
+      color: white;
+      padding: 10px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      width: 100%;
+      margin-top: 10px;
+      text-align: left;
     }
-    /* Assignment Insights renamed */
-    #assignmentInsightsBtn {
-      background-color: #007bff;
-      margin-top: 20px;
+    .toggle-content {
+      display: none;
+      margin-top: 10px;
     }
   </style>
 </head>
 <body>
-  <!-- Screen 1 Header -->
-  <h1>User ticket creation view</h1>
-  
   <!-- Screen 1: Ticket Creation -->
   <div id="screen1">
+    <h1 id="screen1Header">User ticket creation view</h1>
+    
     <div class="form-group">
       <label for="summary">Summary:</label>
       <input type="text" id="summary" name="summary" placeholder="Enter a brief summary">
@@ -158,14 +158,19 @@
       <input type="text" id="company_code" name="company_code">
     </div>
     <div class="form-group">
-      <label for="user_priority">Priority:</label>
-      <select id="user_priority" name="user_priority">
-        <option value="">--Select Priority--</option>
+      <label for="priority">User Priority:</label>
+      <select id="priority" name="priority">
+        <option value="emergency">Emergency</option>
         <option value="high">High</option>
-        <option value="medium">Medium</option>
+        <option value="medium" selected>Medium</option>
         <option value="low">Low</option>
       </select>
     </div>
+    <div class="form-group">
+      <label for="attachments">Attachments:</label>
+      <input type="file" id="attachments" name="attachments" multiple>
+    </div>
+    
     <button onclick="validateTicket()">Create Ticket</button>
   </div>
   
@@ -173,19 +178,22 @@
   <div id="loaderModal" class="modal">
     <div class="modal-content">
       <div class="loader"></div>
-      <p>Ticket is sufficient for classification. Please wait...</p>
+      <p>Information sufficient for further processing, creating ticket....</p>
     </div>
   </div>
   
-  <!-- Screen 2 Header -->
-  <h2 id="screen2Header" style="display:none;">AMS view: Ticket classification and duplicate detection</h2>
-  
-  <!-- Screen 2: AMS View -->
+  <!-- Screen 2: AMS (Classification) Full-Screen with Scroll -->
+  <!-- This content will be transferred to a new window -->
   <div id="screen2">
-    <!-- Back Button to return to Screen 1 -->
-    <button id="backBtn" onclick="goBack()">Back</button>
+    <h2 style="text-align:center;">AMS view: Ticket classification and duplicate detection</h2>
     
-    <!-- Pre-filled fields (editable) -->
+    <!-- Ticket ID Field (auto-generated) -->
+    <div class="form-group">
+      <label for="ticketID">Ticket ID:</label>
+      <input type="text" id="ticketID" name="ticketID" readonly>
+    </div>
+    
+    <!-- Fields from Screen 1 (pre-filled) + Classify Ticket Button -->
     <div class="form-group">
       <label for="summary2">Summary:</label>
       <input type="text" id="summary2" name="summary2">
@@ -194,6 +202,25 @@
       <label for="description2">Description:</label>
       <textarea id="description2" name="description2" rows="10"></textarea>
     </div>
+    
+    <!-- Attachments (passed from Screen 1 - placeholder in UI) -->
+    <div class="form-group">
+      <label for="attachments2">Attachments:</label>
+      <input type="file" id="attachments2" name="attachments2" multiple>
+    </div>
+    
+    <!-- Status (always open) -->
+    <div class="form-group">
+      <label for="statusField">Status:</label>
+      <input type="text" id="statusField" readonly>
+    </div>
+    
+    <!-- User Priority (passed from Screen 1) -->
+    <div class="form-group">
+      <label for="priority2">User Priority:</label>
+      <input type="text" id="priority2" readonly>
+    </div>
+    
     <div class="form-group">
       <label for="component2">Component:</label>
       <input type="text" id="component2" name="component2">
@@ -203,11 +230,10 @@
       <input type="text" id="company_code2" name="company_code2">
     </div>
     
-    <!-- Button to trigger classification -->
     <button id="classifyBtn" onclick="classifyTicket()">Classify Ticket</button>
     
-    <!-- Results Section -->
-    <div id="resultsSection">
+    <!-- Classification Results (hidden until classification is done) -->
+    <div id="classificationResults" style="display:none; margin-top:20px;">
       <!-- Classification Fields -->
       <div class="form-group" id="incidentTypeGroup" style="display:none;">
         <label for="incidentType">Incident Type:</label>
@@ -229,32 +255,25 @@
         <label for="urgencyField">Urgency:</label>
         <input type="text" id="urgencyField">
       </div>
+      <!-- Impact field (auto-derived from urgency) -->
+      <div class="form-group" id="impactFieldGroup" style="display:none;">
+        <label for="impactField">Impact:</label>
+        <input type="text" id="impactField" readonly>
+      </div>
       
-      <!-- Duplicate Info (only if duplicate is detected) -->
+      <!-- Duplicate Info -->
       <div id="duplicateInfoSection" style="display:none; margin-top:20px;">
         <div class="form-group">
-          <label for="isDuplicate">Is Duplicate:</label>
-          <input type="text" id="isDuplicate">
-        </div>
-        <div class="form-group">
-          <label for="duplicateCategory">Duplicate Category:</label>
-          <input type="text" id="duplicateCategory">
-        </div>
-        <div class="form-group">
-          <label for="originalTicketId">Original Ticket ID:</label>
+          <label for="originalTicketId">Duplicate Ticket List:</label>
           <input type="text" id="originalTicketId">
         </div>
         <div class="form-group">
-          <label for="similarityScore">Similarity Score:</label>
+          <label for="similarityScore">Confidence for Duplicates:</label>
           <input type="text" id="similarityScore">
-        </div>
-        <div class="form-group">
-          <label for="duplicateReasoning">Reasoning:</label>
-          <textarea id="duplicateReasoning" rows="4"></textarea>
         </div>
       </div>
       
-      <!-- Assignment Group (only if available) -->
+      <!-- Assignment Group: Only shown if available -->
       <div id="assignmentGroupSection" style="display:none; margin-top:20px;">
         <div class="form-group">
           <label for="assignmentGroup">Assignment Group:</label>
@@ -263,32 +282,32 @@
       </div>
     </div>
     
-    <!-- Debug Info Section (shown only after classification) -->
-    <div id="debugSection">
-      <button class="debug-toggle" onclick="toggleDebug()">Show Debug Info</button>
-      <div id="debugContent" style="display:none;">
-        <h3>Similar Tickets</h3>
-        <div id="similar_tickets"></div>
-        <h3>Context Relevance</h3>
-        <div id="context_relevance"></div>
-        <h3>Answer Relevance</h3>
-        <div id="answer_relevance"></div>
-      </div>
+    <!-- Debug Section: Collapsible -->
+    <button class="toggle-btn" style="display:none;" id="debugToggle" onclick="toggleDebug()">Show Debug Info</button>
+    <div class="toggle-content" id="debugSection">
+      <h3>Similar Tickets</h3>
+      <div id="similar_tickets"></div>
+      <h3>Context Relevance</h3>
+      <div id="context_relevance"></div>
+      <h3>Answer Relevance</h3>
+      <div id="answer_relevance"></div>
     </div>
     
-    <!-- Assignment Insights (renamed Refresh Insights) placed after Debug Info -->
-    <button id="assignmentInsightsBtn" onclick="fetchInsights()">Assignment Insights</button>
-    <div id="insights_data"></div>
+    <!-- Assignment Insights: Collapsible -->
+    <button class="toggle-btn" style="display:none;" id="assignmentInsightsToggle" onclick="toggleAssignmentInsights()">Show Assignment Insights</button>
+    <div class="toggle-content" id="assignmentInsights">
+      <div id="insights_data"></div>
+    </div>
+    
+    <!-- Back Button -->
+    <button style="background-color:#6c757d; width:auto; margin-top:20px;" onclick="goBack()">Back</button>
   </div>
   
   <script>
-    // Function to return to Screen 1 (User Ticket Creation)
-    function goBack() {
-      // Optionally, clear Screen 2 fields if needed
-      document.getElementById('screen2').style.display = 'none';
-      document.getElementById('screen1').style.display = 'block';
-      // Also, reset header visibility
-      document.getElementById('screen2Header').style.display = 'none';
+    // Generate a random unique ticket id with prefix "REQ-"
+    function generateTicketID() {
+      const randomNum = Math.floor(100000 + Math.random() * 900000);
+      return "REQ-" + randomNum;
     }
     
     /****************************************
@@ -299,16 +318,26 @@
       const description = document.getElementById('description').value.trim();
       const component = document.getElementById('component').value.trim();
       const company_code = document.getElementById('company_code').value.trim();
-      // User Priority is for UI only; we don't send it to backend.
+      const priority = document.getElementById('priority').value;
+      const attachments = document.getElementById('attachments').files;
+      
       if (!summary || !description || !component || !company_code) {
         alert('Summary, Description, Company, and Component are mandatory.');
         return;
       }
-      // Send only required fields for validation
+      
+      // Example fetch call to validate ticket (adjust URL and payload as needed)
       fetch('/process_ticket', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ summary, description, component, company_code, step: "validate" })
+        body: JSON.stringify({
+          summary,
+          description,
+          component,
+          company_code,
+          priority,
+          step: "validate"
+        })
       })
       .then(response => response.json())
       .then(data => {
@@ -316,19 +345,75 @@
           alert(data.message || "Missing required ticket information.");
           return;
         }
-        // Show loader modal upon successful validation
+        // Show loader modal briefly
         document.getElementById('loaderModal').style.display = 'block';
         setTimeout(() => {
           document.getElementById('loaderModal').style.display = 'none';
+          
+          // Open a new window and write Screen 2 content into it
+          const newWin = window.open("", "screen2Window", "width=1024,height=768");
+          const screen2Content = document.getElementById('screen2').outerHTML;
+          
+          newWin.document.open();
+          newWin.document.write(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <title>AMS view: Ticket classification and duplicate detection</title>
+              <meta name="viewport" content="width=device-width, initial-scale=1">
+              <style>
+                /* Replicate necessary styles or include external stylesheet link */
+                body {
+                  font-family: Arial, sans-serif;
+                  max-width: 900px;
+                  margin: 0 auto;
+                  padding: 20px;
+                  background-color: #f8f9fa;
+                }
+                h1, h2, h3 { text-align: center; color: #333; }
+                .form-group { margin-bottom: 15px; }
+                label { font-weight: bold; }
+                input[type="text"],
+                input[type="file"],
+                textarea,
+                select {
+                  width: 100%;
+                  padding: 10px;
+                  border: 1px solid #ddd;
+                  border-radius: 5px;
+                }
+                button {
+                  background-color: #007bff;
+                  color: white;
+                  padding: 12px 18px;
+                  border: none;
+                  border-radius: 5px;
+                  cursor: pointer;
+                  width: 100%;
+                  margin-top: 10px;
+                }
+                /* Add other styles as needed */
+              </style>
+            </head>
+            <body>
+              ${screen2Content}
+              <script>
+                // Pre-populate Screen 2 fields using data from Screen 1
+                document.getElementById('statusField').value = "open";
+                document.getElementById('ticketID').value = "${generateTicketID()}";
+                document.getElementById('priority2').value = "${priority}";
+                document.getElementById('summary2').value = "${summary.replace(/"/g, '&quot;')}";
+                document.getElementById('description2').value = "${description.replace(/"/g, '&quot;')}";
+                document.getElementById('component2').value = "${component.replace(/"/g, '&quot;')}";
+                document.getElementById('company_code2').value = "${company_code.replace(/"/g, '&quot;')}";
+              <\/script>
+            </body>
+            </html>
+          `);
+          newWin.document.close();
+          
+          // Optionally, hide Screen 1 in the original window
           document.getElementById('screen1').style.display = 'none';
-          document.getElementById('screen2').style.display = 'block';
-          // Show the AMS view header
-          document.getElementById('screen2Header').style.display = 'block';
-          // Pre-fill Screen 2 fields with values from Screen 1
-          document.getElementById('summary2').value = summary;
-          document.getElementById('description2').value = description;
-          document.getElementById('component2').value = component;
-          document.getElementById('company_code2').value = company_code;
         }, 2000);
       })
       .catch(error => {
@@ -337,15 +422,49 @@
       });
     }
     
+    // Clear AMS view fields and hide sections for fresh view
+    function resetAMSView() {
+      document.getElementById('statusField').value = "";
+      document.getElementById('ticketID').value = "";
+      document.getElementById('priority2').value = "";
+      document.getElementById('attachments2').value = "";
+      document.getElementById('classificationResults').style.display = 'none';
+      document.getElementById('incidentTypeGroup').style.display = 'none';
+      document.getElementById('category1Group').style.display = 'none';
+      document.getElementById('category2Group').style.display = 'none';
+      document.getElementById('category3Group').style.display = 'none';
+      document.getElementById('urgencyFieldGroup').style.display = 'none';
+      document.getElementById('impactFieldGroup').style.display = 'none';
+      document.getElementById('duplicateInfoSection').style.display = 'none';
+      document.getElementById('assignmentGroupSection').style.display = 'none';
+      document.getElementById('debugToggle').style.display = 'none';
+      document.getElementById('assignmentInsightsToggle').style.display = 'none';
+      document.getElementById('debugSection').style.display = 'none';
+      document.getElementById('assignmentInsights').style.display = 'none';
+      document.getElementById('classifyBtn').style.display = 'block';
+      document.getElementById('summary2').value = "";
+      document.getElementById('description2').value = "";
+      document.getElementById('component2').value = "";
+      document.getElementById('company_code2').value = "";
+      document.getElementById('incidentType').value = "";
+      document.getElementById('category1').value = "";
+      document.getElementById('category2').value = "";
+      document.getElementById('category3').value = "";
+      document.getElementById('urgencyField').value = "";
+      document.getElementById('impactField').value = "";
+      document.getElementById('originalTicketId').value = "";
+      document.getElementById('similarityScore').value = "";
+      document.getElementById('assignmentGroup').value = "";
+    }
+    
     /****************************************
-     *  SCREEN 2: Classify Ticket & Display *
+     *   SCREEN 2: Classify Ticket & Display *
      ****************************************/
     function classifyTicket() {
       const summary = document.getElementById('summary2').value.trim();
       const description = document.getElementById('description2').value.trim();
       const component = document.getElementById('component2').value.trim();
       const company_code = document.getElementById('company_code2').value.trim();
-      // We do NOT send any priority field in the final step.
       
       // Hide the classify button once clicked
       document.getElementById('classifyBtn').style.display = 'none';
@@ -359,44 +478,37 @@
       .then(data => {
         if (data.error) {
           alert(data.error);
-          // Restore the classify button on error
           document.getElementById('classifyBtn').style.display = 'block';
           return;
         }
         alert(data.message || "Classification completed.");
         
-        // Show results section
-        document.getElementById('resultsSection').style.display = 'block';
+        document.getElementById('classificationResults').style.display = 'block';
         
-        // 1) Classification fields
         if (data.classification) {
           try {
             const classificationObj = JSON.parse(data.classification);
-            // Use keys as returned by your classifier (with underscores)
             setFieldValueOrHide("incidentType", "incidentTypeGroup", classificationObj.Incident_Type);
             setFieldValueOrHide("category1", "category1Group", classificationObj.Category_1);
             setFieldValueOrHide("category2", "category2Group", classificationObj.Category_2);
             setFieldValueOrHide("category3", "category3Group", classificationObj.Category_3);
             setFieldValueOrHide("urgencyField", "urgencyFieldGroup", classificationObj.Urgency);
+            deriveImpact(classificationObj.Urgency);
           } catch (e) {
             console.warn("Could not parse classification JSON.");
             setFieldValueOrHide("incidentType", "incidentTypeGroup", data.classification);
           }
         }
         
-        // 2) Duplicate info: Only show if duplicate is detected
         if (data.duplicate_debug && data.duplicate_debug.is_duplicate) {
           document.getElementById('duplicateInfoSection').style.display = 'block';
-          document.getElementById('isDuplicate').value       = data.duplicate_debug.is_duplicate || "";
-          document.getElementById('duplicateCategory').value = data.duplicate_debug.duplicate_category || "";
-          document.getElementById('originalTicketId').value  = data.duplicate_debug.original_ticket_id || "";
-          document.getElementById('similarityScore').value   = data.duplicate_debug.similarity || "";
-          document.getElementById('duplicateReasoning').value= data.duplicate_debug.reasoning || "";
+          document.getElementById('originalTicketId').value = data.duplicate_debug.original_ticket_id || "";
+          let confidence = Math.round((data.duplicate_debug.similarity || 0) * 100);
+          document.getElementById('similarityScore').value = confidence.toString();
         } else {
           document.getElementById('duplicateInfoSection').style.display = 'none';
         }
         
-        // 3) Assignment Group: Only show if available
         if (data.assignment_group) {
           document.getElementById('assignmentGroupSection').style.display = 'block';
           document.getElementById('assignmentGroup').value = data.assignment_group;
@@ -404,11 +516,9 @@
           document.getElementById('assignmentGroupSection').style.display = 'none';
         }
         
-        // Show agent insights & debug sections after classification
-        document.getElementById('agentInsights').style.display = 'block';
-        document.getElementById('debugSection').style.display   = 'block';
+        document.getElementById('debugToggle').style.display = 'block';
+        document.getElementById('assignmentInsightsToggle').style.display = 'block';
         
-        // Populate debug details if available
         if (data.similar_tickets) {
           buildSimilarTicketsTable(data.similar_tickets, 'similar_tickets');
         }
@@ -426,7 +536,30 @@
       });
     }
     
-    // Helper: Set a field's value or hide its group if empty.
+    function deriveImpact(urgencyVal) {
+      if (!urgencyVal) return;
+      const urgency = urgencyVal.trim().toLowerCase();
+      let impact = "";
+      switch (urgency) {
+        case "emergency":
+          impact = "Disaster";
+          break;
+        case "high":
+          impact = "High";
+          break;
+        case "medium":
+          impact = "Medium";
+          break;
+        case "low":
+          impact = "Low";
+          break;
+        default:
+          impact = "Unknown";
+      }
+      document.getElementById('impactField').value = impact;
+      document.getElementById('impactFieldGroup').style.display = 'block';
+    }
+    
     function setFieldValueOrHide(fieldId, groupId, value) {
       if (value && value.trim() !== "") {
         document.getElementById(fieldId).value = value;
@@ -437,11 +570,23 @@
     }
     
     /****************************************
-     *         Debug / Insights Utils        *
+     *        Debug / Insights Utils         *
      ****************************************/
     function toggleDebug() {
-      const debugContent = document.getElementById('debugContent');
-      debugContent.style.display = (debugContent.style.display === 'none' || debugContent.style.display === '') ? 'block' : 'none';
+      const debugSection = document.getElementById('debugSection');
+      debugSection.style.display = (debugSection.style.display === 'none' || debugSection.style.display === '') ? 'block' : 'none';
+      document.getElementById('debugToggle').textContent =
+        debugSection.style.display === 'block' ? 'Hide Debug Info' : 'Show Debug Info';
+    }
+    
+    function toggleAssignmentInsights() {
+      const insightsSection = document.getElementById('assignmentInsights');
+      insightsSection.style.display = (insightsSection.style.display === 'none' || insightsSection.style.display === '') ? 'block' : 'none';
+      document.getElementById('assignmentInsightsToggle').textContent =
+        insightsSection.style.display === 'block' ? 'Hide Assignment Insights' : 'Show Assignment Insights';
+      if (insightsSection.style.display === 'block') {
+        fetchInsights();
+      }
     }
     
     function fetchInsights() {
@@ -470,15 +615,16 @@
         document.getElementById(containerId).innerHTML = 'No similar tickets found.';
         return;
       }
-      let html = '<table><tr><th>Incident Type</th><th>Category1</th><th>Category2</th><th>Category3</th><th>Priority</th><th>Similarity</th><th>Cross-Encoder</th><th>Combined Score</th></tr>';
+      let html = '<table><tr><th>Incident Type</th><th>Category1</th><th>Category2</th><th>Category3</th><th>Urgency</th><th>Confidence for Duplicates</th><th>Cross-Encoder</th><th>Combined Score</th></tr>';
       tickets.forEach(ticket => {
+        const confidence = Math.round((ticket.Similarity_Score || 0) * 100);
         html += `<tr>
           <td>${ticket.Incident_Type}</td>
           <td>${ticket.Category1}</td>
           <td>${ticket.Category2}</td>
           <td>${ticket.Category3}</td>
-          <td>${ticket.Priority}</td>
-          <td>${ticket.Similarity_Score}</td>
+          <td>${ticket.Urgency}</td>
+          <td>${confidence}</td>
           <td>${ticket.Cross_Encoder_Score}</td>
           <td>${ticket.Combined_Score}</td>
         </tr>`;
@@ -521,6 +667,13 @@
       }
       html += '</table>';
       document.getElementById(containerId).innerHTML = html;
+    }
+    
+    // Back button functionality: Clears AMS view and returns to Screen 1
+    function goBack() {
+      document.getElementById('screen2').style.display = 'none';
+      document.getElementById('screen1').style.display = 'block';
+      resetAMSView();
     }
   </script>
 </body>
