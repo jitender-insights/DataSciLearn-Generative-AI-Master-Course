@@ -40,7 +40,7 @@
     }
     /* Loader Modal Styles */
     .modal {
-      display: none; /* Hidden by default */
+      display: none;
       position: fixed;
       z-index: 999;
       left: 0;
@@ -128,7 +128,7 @@
 <body>
   <h1>JIRA Ticket Classification & Duplicate Detection</h1>
   
-  <!-- Screen 1: Ticket Creation (User Input) -->
+  <!-- Screen 1: Ticket Creation -->
   <div id="screen1">
     <div class="form-group">
       <label for="summary">Summary:</label>
@@ -143,22 +143,13 @@
       <input type="text" id="component" name="component">
     </div>
     <div class="form-group">
-      <label for="company_code">Company:</label>
+      <label for="company_code">Company Code:</label>
       <input type="text" id="company_code" name="company_code">
-    </div>
-    <div class="form-group">
-      <label for="priority">Priority:</label>
-      <select id="priority" name="priority">
-        <option value="">--Select Priority--</option>
-        <option value="low">Low</option>
-        <option value="medium">Medium</option>
-        <option value="high">High</option>
-      </select>
     </div>
     <button onclick="validateTicket()">Create Ticket</button>
   </div>
   
-  <!-- Loader Modal (appears after successful validation) -->
+  <!-- Loader Modal (after successful validation) -->
   <div id="loaderModal" class="modal">
     <div class="modal-content">
       <div class="loader"></div>
@@ -169,7 +160,7 @@
   <!-- Screen 2: AMS (Classification) -->
   <div id="screen2">
     <h2>AMS Ticket Screen</h2>
-    <!-- Pre-filled fields from Screen 1 (editable) -->
+    <!-- Pre-filled fields (editable) -->
     <div class="form-group">
       <label for="summary2">Summary:</label>
       <input type="text" id="summary2" name="summary2">
@@ -183,18 +174,14 @@
       <input type="text" id="component2" name="component2">
     </div>
     <div class="form-group">
-      <label for="company_code2">Company:</label>
+      <label for="company_code2">Company Code:</label>
       <input type="text" id="company_code2" name="company_code2">
     </div>
-    <div class="form-group">
-      <label for="priority2">Priority:</label>
-      <input type="text" id="priority2" name="priority2">
-    </div>
     
-    <!-- Button to classify the ticket -->
+    <!-- Button to trigger classification (hidden after click) -->
     <button id="classifyBtn" onclick="classifyTicket()">Classify Ticket</button>
     
-    <!-- Results Section: Display classification, duplicate, assignment results -->
+    <!-- Results Section (populated after classification) -->
     <div id="resultsSection">
       <!-- Classification Fields -->
       <div class="form-group" id="incidentTypeGroup" style="display:none;">
@@ -281,18 +268,17 @@
       const description = document.getElementById('description').value.trim();
       const component = document.getElementById('component').value.trim();
       const company_code = document.getElementById('company_code').value.trim();
-      const priority = document.getElementById('priority').value.trim();
       
-      if (!summary || !description || !component || !company_code || !priority) {
-        alert('Summary, Description, Company, Component, and Priority are mandatory.');
+      if (!summary || !description || !component || !company_code) {
+        alert('Summary, Description, Company Code, and Component are mandatory.');
         return;
       }
       
-      // Send lower-case key names to the backend.
+      // Send only the required fields for validation
       fetch('/process_ticket', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ summary, description, component, company_code, priority, step: "validate" })
+        body: JSON.stringify({ summary, description, component, company_code, step: "validate" })
       })
       .then(response => response.json())
       .then(data => {
@@ -311,7 +297,6 @@
           document.getElementById('description2').value = description;
           document.getElementById('component2').value = component;
           document.getElementById('company_code2').value = company_code;
-          document.getElementById('priority2').value = priority;
         }, 2000);
       })
       .catch(error => {
@@ -328,7 +313,7 @@
       const description = document.getElementById('description2').value.trim();
       const component = document.getElementById('component2').value.trim();
       const company_code = document.getElementById('company_code2').value.trim();
-      // Note: We do NOT send "priority" in this final step.
+      // Note: We do NOT send any priority field in this final step.
       
       // Hide the classify button once clicked
       document.getElementById('classifyBtn').style.display = 'none';
@@ -408,7 +393,7 @@
       });
     }
     
-    // Helper function: Set a field's value or hide its group if empty.
+    // Helper: Set a field's value or hide its group if empty.
     function setFieldValueOrHide(fieldId, groupId, value) {
       if (value && value.trim() !== "") {
         document.getElementById(fieldId).value = value;
