@@ -80,8 +80,7 @@
       0% { transform: rotate(0deg); }
       100% { transform: rotate(360deg); }
     }
-    /* Screen 2: AMS (Classification) Full-Screen with Scroll, matching color scheme */
-    /* Note: In the original window Screen2 remains hidden. Its content will be injected into the new tab. */
+    /* Screen 2 (AMS View) – remains hidden in the original window */
     #screen2 {
       display: none;
       position: fixed;
@@ -189,7 +188,7 @@
   </div>
 
   <!-- Screen 2: AMS (Classification) Full-Screen with Scroll -->
-  <!-- This markup remains in the original file (hidden) and will be injected into the new tab -->
+  <!-- This markup remains hidden in the original window and will be injected into the new tab -->
   <div id="screen2">
     <h2 style="text-align:center;">AMS view: Ticket classification and duplicate detection</h2>
     <!-- Ticket ID Field (auto-generated) -->
@@ -302,7 +301,7 @@
       const randomNum = Math.floor(100000 + Math.random() * 900000);
       return "REQ-" + randomNum;
     }
-
+    
     /****************************************
      * SCREEN 1: Validate & Create Ticket   *
      ****************************************/
@@ -319,7 +318,7 @@
         return;
       }
       
-      // Send only the required fields for validation (adjust URL as needed)
+      // Send only the required fields for validation
       fetch('/process_ticket', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -338,15 +337,15 @@
           alert(data.message || "Missing required ticket information.");
           return;
         }
-        // Show loader modal briefly
+        // Show loader modal upon successful validation
         document.getElementById('loaderModal').style.display = 'block';
         setTimeout(() => {
           document.getElementById('loaderModal').style.display = 'none';
           // Hide Screen 1 in the original window
           document.getElementById('screen1').style.display = 'none';
-          // Reset AMS view (in case of previous use)
+          // Reset AMS view
           resetAMSView();
-          // Pre-fill AMS fields in the hidden Screen 2
+          // Pre-fill AMS fields with Screen 1 data
           document.getElementById('statusField').value = "open";
           document.getElementById('ticketID').value = generateTicketID();
           document.getElementById('priority2').value = priority;
@@ -355,11 +354,9 @@
           document.getElementById('component2').value = component;
           document.getElementById('company_code2').value = company_code;
           
-          // Now, open a new tab with Screen 2 content
+          // Open Screen 2 in a new tab (all existing functionality will be available there)
           const newTab = window.open("", "_blank");
           const screen2Content = document.getElementById('screen2').outerHTML;
-          
-          // Build a complete HTML document for the new tab, including all CSS and JS functions
           newTab.document.open();
           newTab.document.write(`
             <!DOCTYPE html>
@@ -368,7 +365,6 @@
               <title>AMS View: Ticket Classification & Duplicate Detection</title>
               <meta name="viewport" content="width=device-width, initial-scale=1">
               <style>
-                /* Shared styles (same as in original) */
                 body {
                   font-family: Arial, sans-serif;
                   max-width: 900px;
@@ -499,7 +495,7 @@
             <body>
               ${screen2Content}
               <script>
-                // Pre-populate Screen 2 fields using Screen 1 data already passed
+                // Pre-populate Screen 2 fields (they were set in the original window)
                 document.getElementById('statusField').value = "open";
                 document.getElementById('ticketID').value = "${generateTicketID()}";
                 document.getElementById('priority2').value = "${priority}";
@@ -516,10 +512,7 @@
                   const description = document.getElementById('description2').value.trim();
                   const component = document.getElementById('component2').value.trim();
                   const company_code = document.getElementById('company_code2').value.trim();
-                  
-                  // Hide the classify button to prevent multiple clicks
                   document.getElementById('classifyBtn').style.display = 'none';
-                  
                   fetch('/process_ticket', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -534,7 +527,6 @@
                     }
                     alert(data.message || "Classification completed.");
                     document.getElementById('classificationResults').style.display = 'block';
-                    // Classification fields update
                     if (data.classification) {
                       try {
                         const classificationObj = JSON.parse(data.classification);
@@ -730,8 +722,8 @@
      * SCREEN 2: Classify Ticket & Display  *
      ****************************************/
     function classifyTicket() {
-      // This function is retained for fallback in the original window (if needed)
-      alert("This function is handled in the new tab.");
+      // This fallback function in the original window won't be used when new tab is open.
+      alert("Classification is handled in the new tab.");
     }
     
     /****************************************
@@ -768,7 +760,7 @@
       document.getElementById('impactField').value = "";
     }
     
-    // Back button for original window (if needed)
+    // Back button in the original window (for fallback)
     function goBack() {
       document.getElementById('screen2').style.display = 'none';
       document.getElementById('screen1').style.display = 'block';
