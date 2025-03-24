@@ -12,10 +12,10 @@ from fastapi import FastAPI, Request, HTTPException, status
 from fastapi.responses import JSONResponse, HTMLResponse
 
 # ---------------------------
-# Import your project modules
+# Import project modules
 # ---------------------------
 from config.logger_config import LoggerConfig
-from analysis.anlaysis import TicketAnalyzer  # Ensure correct module name; note the typo if needed.
+from analysis.anlaysis import *   # Ensure this import does not pollute the namespace
 from classification.classifier import TicketClassifier
 from duplicate.duplicate_detector import DuplicateDetector
 from models.ai_models import AIModels
@@ -26,6 +26,7 @@ from utils.utils import Utils
 from config import config
 from assignement.assignement import TicketAssignment
 from prompts.prompt_generator import PromptGenerator
+from mappers.mappers import TicketRequest, ProcessTicketRequest
 
 # Database functions
 from db.database import (
@@ -40,7 +41,11 @@ from db.database import (
 # Set up Logger and App
 # ---------------------------
 LoggerConfig.setup_logger()
-app = FastAPI(title="Ticket Processing API")
+app = FastAPI(
+    title="Ticket Processing API",
+    description="A production-grade API for processing tickets that supports analysis, duplicate detection, classification, assignment, and reporting endpoints.",
+    version="1.0.0"
+)
 
 # Initialize models and vector store (shared by services)
 llm, embeddings = AIModels.initialize_models()
@@ -65,20 +70,31 @@ async def index():
 # ============================
 # Database Endpoints
 # ============================
-
-@app.post("/create_ticket")
-async def create_ticket_endpoint(request: Request):
+@app.post("/create_ticket", summary="Create a New Ticket", description="Inserts a new ticket into the REQUESTS table.")
+async def create_ticket_endpoint(ticket: TicketRequest):
     """
-    Inserts a new ticket into the REQUESTS table.
+    Creates a new ticket based on the provided JSON body.
+    Example JSON:
+    {
+      "Summary": "Network outage in building 5",
+      "Description": "Multiple users report Wi-Fi connectivity loss.",
+      "Component": "Network",
+      "Company_Code": "XYZ123",
+      "Attachments": []
+    }
     """
     try:
-        data = await request.json()
-        ticket_id = insert_ticket_request(data)
-        return {"message": "Ticket created successfully", "ticket_id": ticket_id}
+        ticket_data = ticket.dict()
+        ticket_id = insert_ticket_request(ticket_data)
+        logging.info(f"Ticket created successfully with ID: {ticket_id}")
+        return {
+            "message": "Ticket created successfully",
+            "ticket_id": ticket_id,
+            "received_data": ticket_data
+        }
     except Exception as e:
         logging.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
-
+        raise HTTPException(status_code=500, detail="An error occurred while creating the ticket.")
 
 @app.get("/pending_tickets")
 async def pending_tickets():
@@ -99,7 +115,6 @@ async def pending_tickets():
     except Exception as e:
         logging.error("Error fetching pending tickets: " + str(e))
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/classified_tickets")
 async def classified_tickets():
@@ -149,32 +164,41 @@ def perform_analysis(ticket_data: dict) -> dict:
     )
     return analysis_result
 
-@app.post("/service/analysis")
-async def analysis_endpoint(request: Request):
+@app.post("/service/analysis", summary="Ticket Analysis", description="Analyzes ticket information for missing or insufficient details.")
+async def analysis_endpoint(ticket: TicketRequest):
     """
-    Analysis endpoint: validates ticket information.
+    Analyzes ticket information to check for missing or insufficient details.
+    Example JSON:
+    {
+      "Summary": "Network outage in building 5",
+      "Description": "Multiple users report Wi-Fi connectivity loss.",
+      "Component": "Network",
+      "Company_Code": "XYZ123",
+      "Attachments": []
+    }
     """
     try:
-        data = await request.json()
-        if not data:
-            logging.error("No JSON data received in analysis_endpoint")
-            raise HTTPException(status_code=400, detail="No JSON data received")
-        result = perform_analysis(data)
-        if result.get("missing_info", False):
-            logging.warning("Ticket missing required information")
+        data = ticket.dict()
+        analysis_result = TicketAnalyzer.analyze_ticket_data(
+            summary=data["Summary"],
+            description=data["Description"],
+            component=data["Component"],
+            company_code=data["Company_Code"],
+            attachments=data.get("Attachments", [])
+        )
+        if analysis_result.get("missing_info", False):
             return JSONResponse(
                 status_code=400,
                 content={
-                    "status": result.get("status", "fail"),
-                    "message": result.get("message", "Missing information"),
-                    "missing_fields": result.get("missing_fields", [])
+                    "error": "Missing or insufficient ticket information.",
+                    "service": "analysis",
+                    "analysis": analysis_result
                 }
             )
-        return {"status": "success", "analysis": result}
+        return {"status": "success", "analysis": analysis_result}
     except Exception as e:
         logging.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
-
+        raise HTTPException(status_code=500, detail="An error occurred during analysis.")
 
 # --- Duplicate Detection Service ---
 def perform_duplicate(ticket_data: dict) -> dict:
@@ -198,22 +222,15 @@ def perform_duplicate(ticket_data: dict) -> dict:
     )
     return duplicate_result
 
-@app.post("/service/duplicate")
-async def duplicate_endpoint(request: Request):
-    """
-    Duplicate detection endpoint.
-    """
+@app.post("/service/duplicate", summary="Duplicate Detection", description="Checks for duplicate tickets.")
+async def duplicate_endpoint(ticket: TicketRequest):
     try:
-        data = await request.json()
-        if not data:
-            logging.error("No JSON data received in duplicate_endpoint")
-            raise HTTPException(status_code=400, detail="No JSON data received")
-        result = perform_duplicate(data)
+        ticket_data = ticket.dict()
+        result = DuplicateDetector.check_duplicate_ticket(ticket_data, vectorstore, embeddings)
         return {"status": "success", "duplicate": result}
     except Exception as e:
         logging.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
-
+        raise HTTPException(status_code=500, detail="An error occurred during duplicate detection.")
 
 # --- Classification Service ---
 def perform_classification(ticket_data: dict) -> dict:
@@ -222,7 +239,7 @@ def perform_classification(ticket_data: dict) -> dict:
     """
     summary = ticket_data.get("Summary", ticket_data.get("summary", "")).strip()
     description = ticket_data.get("Description", ticket_data.get("description", "")).strip()
-
+    
     retrieved_tickets = TicketRetrieval.retrieve_and_rerank_tickets(
         vectorstore, summary, description, k=5
     )
@@ -230,7 +247,6 @@ def perform_classification(ticket_data: dict) -> dict:
         llm, retrieved_tickets, summary, description
     )
     
-    # Evaluate relevance/confidence
     const_query = Utils.normalize_text(f"{summary} {description}")
     context_relevance = Evaluator.evaluate_context_relevance(const_query, retrieved_tickets, embeddings)
     answer_relevance = Evaluator.evaluate_answer_relevance(const_query, classification, retrieved_tickets, embeddings)
@@ -242,29 +258,37 @@ def perform_classification(ticket_data: dict) -> dict:
         "answer_relevance": answer_relevance
     }
 
-@app.post("/service/classification")
-async def classification_endpoint(request: Request):
-    """
-    Classification endpoint.
-    """
+@app.post("/service/classification", summary="Classification", description="Generates ticket classification based on similar tickets.")
+async def classification_endpoint(ticket: TicketRequest):
     try:
-        data = await request.json()
-        if not data:
-            logging.error("No JSON data received in classification_endpoint")
-            raise HTTPException(status_code=400, detail="No JSON data received")
-        result = perform_classification(data)
-        return {"status": "success", "classification_result": result}
+        data = ticket.dict()
+        retrieved_tickets = TicketRetrieval.retrieve_and_rerank_tickets(
+            vectorstore, data["Summary"], data["Description"], k=5
+        )
+        classification = PromptGenerator.generate_response_with_prompt(
+            llm, retrieved_tickets, data["Summary"], data["Description"]
+        )
+        const_query = Utils.normalize_text(f"{data['Summary']} {data['Description']}")
+        context_relevance = Evaluator.evaluate_context_relevance(const_query, retrieved_tickets, embeddings)
+        answer_relevance = Evaluator.evaluate_answer_relevance(const_query, classification, retrieved_tickets, embeddings)
+        return {
+            "status": "success",
+            "classification_result": {
+                "classification": classification,
+                "similar_tickets": retrieved_tickets,
+                "context_relevance": context_relevance,
+                "answer_relevance": answer_relevance
+            }
+        }
     except Exception as e:
         logging.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
-
+        raise HTTPException(status_code=500, detail="An error occurred during classification.")
 
 # --- Assignment Service ---
 def perform_assignment(ticket_data: dict) -> dict:
     """
     Determine the assignment based on classification.
     """
-    # Extract classification result if available; default incident type is 'others'
     incident_type = "others"
     classification = ticket_data.get("classification", None)
     if classification:
@@ -284,26 +308,31 @@ def perform_assignment(ticket_data: dict) -> dict:
     assignment_group = TicketAssignment.assign_ticket(ticket_info, TicketAssignment.load_agents())
     return {"assignment_group": assignment_group}
 
-@app.post("/service/assignment")
-async def assignment_endpoint(request: Request):
-    """
-    Assignment endpoint.
-    """
+@app.post("/service/assignment", summary="Assignment", description="Assigns a ticket based on its classification.")
+async def assignment_endpoint(ticket: TicketRequest):
     try:
-        data = await request.json()
-        if not data:
-            logging.error("No JSON data received in assignment_endpoint")
-            raise HTTPException(status_code=400, detail="No JSON data received")
-        result = perform_assignment(data)
-        return {"status": "success", "assignment_result": result}
+        data = ticket.dict()
+        classification = data.get("Classification", '{"Incident_Type": "others"}')
+        try:
+            parsed = json.loads(classification)
+            incident_type = parsed.get("Incident_Type", "others").strip().lower()
+        except Exception:
+            incident_type = "others"
+        ticket_info = {
+            "ticket_type": incident_type,
+            "summary": data["Summary"],
+            "description": data["Description"],
+            "division": incident_type
+        }
+        assignment = TicketAssignment.assign_ticket(ticket_info, TicketAssignment.load_agents())
+        return {"status": "success", "assignment_result": assignment}
     except Exception as e:
         logging.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="An error occurred during assignment.")
 
-
-# --- Master Orchestrator: Process Ticket ---
+# --- Master Orchestrator: Update/Insert Classification ---
 def update_or_insert_ticket_classification(ticket_id, classification, classification_confidence, assignment,
-                                             duplicate_ticket_list, duplicate_similarity_score, new_state):
+                                           duplicate_ticket_list, duplicate_similarity_score, new_state):
     """
     Updates (or inserts if missing) the classification record into the CLASSIFICATIONS table.
     """
@@ -313,11 +342,11 @@ def update_or_insert_ticket_classification(ticket_id, classification, classifica
         cursor = conn.cursor()
         update_query = f"""
             UPDATE {schema}.TICKETS
-            SET SUMMARY = (SELECT SUMMARY FROM REQUESTS_DB.REQUESTS WHERE TICKET_ID = ?),
-                DESCRIPTION = (SELECT DESCRIPTION FROM REQUESTS_DB.REQUESTS WHERE TICKET_ID = ?),
-                COMPONENT = (SELECT COMPONENT FROM REQUESTS_DB.REQUESTS WHERE TICKET_ID = ?),
-                COMPANY_CODE = (SELECT COMPANY_CODE FROM REQUESTS_DB.REQUESTS WHERE TICKET_ID = ?),
-                PRIORITY = (SELECT PRIORITY FROM REQUESTS_DB.REQUESTS WHERE TICKET_ID = ?),
+            SET SUMMARY = (SELECT r.SUMMARY FROM REQUESTS_DB.REQUESTS WHERE TICKET_ID = ?),
+                DESCRIPTION = (SELECT r.DESCRIPTION FROM REQUESTS_DB.REQUESTS WHERE TICKET_ID = ?),
+                COMPONENT = (SELECT r.COMPONENT FROM REQUESTS_DB.REQUESTS WHERE TICKET_ID = ?),
+                COMPANY_CODE = (SELECT r.COMPANY_CODE FROM REQUESTS_DB.REQUESTS WHERE TICKET_ID = ?),
+                PRIORITY = (SELECT r.PRIORITY FROM REQUESTS_DB.REQUESTS WHERE TICKET_ID = ?),
                 CLASSIFICATION = ?,
                 CLASSIFICATION_CONFIDENCE = ?,
                 ASSIGNMENT_GROUP = ?,
@@ -334,7 +363,7 @@ def update_or_insert_ticket_classification(ticket_id, classification, classifica
             assignment.get("agent_group"),
             assignment.get("agent_id"),
             assignment.get("agent_name"),
-            round(assignment.get("assignment_confidence") * 100, 0),
+            round((assignment.get("assignment_confidence") or 0) * 100, 0),
             new_state,
             ticket_id
         )
@@ -380,7 +409,7 @@ def update_or_insert_ticket_classification(ticket_id, classification, classifica
                 assignment.get("agent_group"),
                 assignment.get("agent_id"),
                 assignment.get("agent_name"),
-                round(assignment.get("assignment_confidence") * 100, 0),
+                round((assignment.get("assignment_confidence") or 0) * 100, 0),
                 new_state,
                 ticket_id
             )
@@ -396,34 +425,35 @@ def update_or_insert_ticket_classification(ticket_id, classification, classifica
             logging.info(f"Classification record updated for ticket {ticket_id}.")
         cursor.close()
         conn.close()
+        
+        # Update the corresponding REQUESTS record to set STATE = 'open'
+        req_schema = load_config()['schemas']['requests']
+        req_conn = get_hana_connection(req_schema)
+        req_cursor = req_conn.cursor()
+        req_update = f"UPDATE {req_schema}.REQUESTS SET STATE = 'open' WHERE TICKET_ID = ?"
+        req_cursor.execute(req_update, (ticket_id,))
+        req_conn.commit()
+        req_cursor.close()
+        req_conn.close()
+        logging.info(f"REQUESTS table updated: Ticket {ticket_id} state set to 'open'.")
     except Exception as e:
         error_msg = f"Error updating/inserting classification for ticket {ticket_id}: {str(e)}"
         logging.error(error_msg)
         raise Exception(error_msg)
 
-
-@app.post("/process_ticket")
-async def process_ticket_endpoint(request: Request):
-    """
-    Master orchestrator endpoint.
-    Processes a ticket through analysis, duplicate detection, classification, assignment,
-    and then updates/inserts the classification record.
-    Supports a 'restart_from' parameter in the JSON to restart from a failed step.
-    """
+# --- Master Orchestrator: Process Ticket Endpoint ---
+@app.post("/process_ticket", summary="Process Ticket", description="Processes a ticket through analysis, duplicate detection, classification, assignment, and then updates/inserts the classification record.")
+async def process_ticket_endpoint(ticket: ProcessTicketRequest):
     try:
-        data = await request.json()
-        if not data:
-            logging.error("No JSON data received in process_ticket")
-            raise HTTPException(status_code=400, detail="No JSON data received")
-        restart_from = data.get("restart_from", "analysis")
+        data = ticket.dict()
         overall_result = {"ticket_data": data}
-        
-        # ----- Step 1: Analysis -----
-        if restart_from == "analysis":
+        incident_type = None  # Declare incident_type in outer scope
+
+        # Step 1: Analysis
+        if data.get("restart_from") == "analysis":
             analysis_result = perform_analysis(data)
             if analysis_result.get("missing_info", False):
                 msg = "Missing or insufficient ticket information."
-                logging.warning(msg)
                 return JSONResponse(
                     status_code=400,
                     content={
@@ -433,92 +463,62 @@ async def process_ticket_endpoint(request: Request):
                     }
                 )
             overall_result["analysis"] = analysis_result
-            restart_from = "duplicate"
+            data["restart_from"] = "duplicate"
         
-        # ----- Step 2: Duplicate Detection -----
-        if restart_from == "duplicate":
+        # Step 2: Duplicate Detection
+        if data.get("restart_from") == "duplicate":
             duplicate_result = perform_duplicate(data)
             overall_result["duplicate"] = duplicate_result
-            restart_from = "classification"
+            data["restart_from"] = "classification"
         
-        # ----- Step 3: Classification -----
-        if restart_from == "classification":
+        # Step 3: Classification
+        if data.get("restart_from") == "classification":
             classification_result = perform_classification(data)
             overall_result["classification_result"] = classification_result
-            # Determine confidence from best similar ticket
             retrieved_tickets = classification_result.get("similar_tickets", [])
-            if retrieved_tickets:
-                best_ticket = retrieved_tickets[0]
-                classification_confidence = best_ticket.get("Combined_Score", 0.0)
-            else:
-                classification_confidence = 0.0
+            classification_confidence = (retrieved_tickets[0].get("Combined_Score", 0.0) if retrieved_tickets else 0.0)
             overall_result["classification_confidence"] = classification_confidence
-            # Validate classification JSON output
             try:
                 parsed = json.loads(classification_result["classification"])
                 incident_type = parsed.get("Incident_Type", "").strip().lower()
                 if not incident_type:
                     raise Exception("Classification module returned empty Incident_Type")
             except Exception as e:
-                logging.error(f"Error parsing classification JSON: {str(e)}")
                 return JSONResponse(
                     status_code=500,
                     content={"error": "Classification modules failed"}
                 )
-            restart_from = "assignment"
+            data["restart_from"] = "assignment"
         
-        # ----- Step 4: Assignment -----
-        if restart_from == "assignment":
+        # Step 4: Assignment
+        if data.get("restart_from") == "assignment":
+            if incident_type is None:
+                incident_type = "others"
             assignment = TicketAssignment.assign_ticket({
                 "ticket_type": incident_type,
-                "summary": data.get("Summary", data.get("summary", "")).strip(),
-                "description": data.get("Description", data.get("description", "")).strip(),
+                "summary": data.get("Summary", "").strip(),
+                "description": data.get("Description", "").strip(),
                 "division": incident_type
             }, TicketAssignment.load_agents())
             overall_result["assignment"] = assignment
-            
-        # ----- Update/Insert Classification Record -----
+        
+        # Step 5: Update/Insert Classification Record
         ticket_id = data.get("ticket_id")
         if ticket_id:
             update_or_insert_ticket_classification(
                 ticket_id,
                 classification_result["classification"],
-                classification_confidence,
+                overall_result["classification_confidence"],
                 assignment,
-                duplicate_result.get("original_ticket_id"),
-                duplicate_result.get("similarity", 0.0),
+                overall_result["duplicate"].get("original_ticket_id"),
+                overall_result["duplicate"].get("similarity", 0.0),
                 new_state="open"
             )
         else:
-            logging.error("No ticket_id provided for classification update.")
             return JSONResponse(status_code=400, content={"error": "No ticket_id provided"})
         
-        final_response = {
-            "message": "Classification completed.",
-            "duplicate_debug": {
-                "is_duplicate": duplicate_result.get("is_duplicate", False),
-                "duplicate_category": duplicate_result.get("duplicate_category", "No duplicate found"),
-                "original_ticket_id": duplicate_result.get("original_ticket_id"),
-                "similarity": duplicate_result.get("similarity", 0.0),
-                "reasoning": duplicate_result.get("reasoning", "")
-            },
-            "classification": classification_result["classification"],
-            "classification_confidence": classification_confidence,
-            "confidence_message": (
-                "High confidence classification." if classification_confidence >= config.CLASSIFICATION_HIGH_CONF_THRESHOLD
-                else "Moderate confidence classification." if classification_confidence >= config.CLASSIFICATION_MODERATE_CONF_THRESHOLD
-                else "Low confidence classification."
-            ),
-            "similar_tickets": classification_result["similar_tickets"],
-            "assignment_group": assignment.get("agent_group"),
-            "agent_id": assignment.get("agent_id"),
-            "agent_name": assignment.get("agent_name"),
-            "assignment_confidence": assignment.get("assignment_confidence")
-        }
-        if duplicate_result.get("is_duplicate", False):
-            final_response["message"] = "Ticket identified as DUPLICATE. Classification completed."
-        logging.info(final_response["message"])
-        return final_response
+        overall_result["message"] = "Ticket processing completed successfully."
+        return overall_result
     except Exception as e:
         logging.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
@@ -556,14 +556,13 @@ async def chart_data():
         for div in stats:
             total = stats[div]["total_agents"]
             stats[div]["avg_workload"] = round(stats[div]["avg_workload"] / total, 2) if total > 0 else 0.0
-
+        
         # Graph: Current Load
         agent_names = [a["agent_name"] for a in agents]
         current_loads = [a["current_load"] for a in agents]
         sla_breaches = [a.get("past_sla_breaches", 0) for a in agents]
         index = list(range(len(agents)))
-
-        # Current Load graph
+        
         fig1, ax1 = plt.subplots(figsize=(10, max(6, len(agents)*0.2)))
         ax1.barh(index, current_loads, label='Current Load')
         ax1.set_yticks(index)
@@ -578,8 +577,8 @@ async def chart_data():
         buf1.seek(0)
         graph_current_load = base64.b64encode(buf1.getvalue()).decode('utf-8')
         plt.close(fig1)
-
-        # SLA Breaches graph
+        
+        # Graph: Past SLA Breaches
         fig2, ax2 = plt.subplots(figsize=(10, max(6, len(agents)*0.2)))
         ax2.barh(index, sla_breaches, label='Past SLA Breaches')
         ax2.set_yticks(index)
@@ -594,12 +593,11 @@ async def chart_data():
         buf2.seek(0)
         graph_sla = base64.b64encode(buf2.getvalue()).decode('utf-8')
         plt.close(fig2)
-
+        
         return {"agents": agents, "stats": stats, "graph_current_load": graph_current_load, "graph_sla": graph_sla}
     except Exception as e:
         logging.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # ============================
 # Agents Data Endpoint
@@ -626,10 +624,4 @@ async def startup_event():
         create_classification_table()
     except Exception as e:
         logging.error(traceback.format_exc())
-        # Optionally, re-raise to abort startup
         raise e
-
-# ---------------------------
-# To run this app:
-# Use the command: uvicorn main:app --host 0.0.0.0 --port 5000 --reload
-# ---------------------------
